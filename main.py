@@ -1,18 +1,23 @@
 """
-Gemini STT Bridge Plugin (DIY Enhanced)
-- 仅负责语音 -> 文本/结构化信息（可选）
-- 再转发给框架 LLM 继续处理
+Gemini STT Bridge Plugin (Hardened)
+- 仅负责语音 -> 文本（simple/rich）并转发给框架
 - 非语音不干预
+- 支持失败策略、事件拦截时机、模型名清洗、说话人信息注入
 """
 
 import os
 import re
+import json
 import base64
+import random
+import socket
+import ipaddress
 import aiohttp
 import asyncio
 import subprocess
 import tempfile
-from typing import Optional, Tuple
+from urllib.parse import urlparse
+from typing import Optional, Tuple, List
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
@@ -25,7 +30,7 @@ except ImportError:
     PILK_AVAILABLE = False
 
 
-@register("gemini_stt_bridge", "Weather", "Gemini语音转写桥接到框架LLM", "2.0.0")
+@register("gemini_stt_bridge", "Weather", "Gemini语音转写桥接到框架LLM", "2.2.0")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -33,21 +38,22 @@ class GeminiSTTBridge(Star):
 
         # 基础
         self.debug = bool(self._cfg("debug_mode", False))
-        self.ffmpeg_path = self._find_ffmpeg()
         self.enable_voice = bool(self._cfg("enable_voice", True))
+        self.ffmpeg_path = self._find_ffmpeg()
 
-        # 群聊策略
+        # 群聊
         self.enable_group_voice = bool(self._cfg("enable_group_voice", False))
         self.group_voice_whitelist = [str(g) for g in self._cfg("group_voice_whitelist", [])]
 
         # 行为策略
         self.stop_other_handlers = bool(self._cfg("stop_other_handlers", True))
-        self.stop_event_timing = self._cfg("stop_event_timing", "before_stt")  # before_stt / after_stt / never
-        self.on_stt_fail = self._cfg("on_stt_fail", "pass")  # pass / block / notify
+        self.stop_event_timing = self._cfg("stop_event_timing", "after_stt")  # before_stt / after_stt / never
+        self.on_stt_fail = self._cfg("on_stt_fail", "notify_pass")  # pass / block / notify / notify_pass
 
         # 输出策略
         self.output_mode = self._cfg("output_mode", "simple")  # simple / rich
         self.attach_voice_marker = bool(self._cfg("attach_voice_marker", True))
+        self.attach_speaker_meta = bool(self._cfg("attach_speaker_meta", True))
         self.show_transcript = bool(self._cfg("show_transcript", False))
 
         # 清洗策略
@@ -61,10 +67,18 @@ class GeminiSTTBridge(Star):
         self.retry_times = int(self._cfg("retry_times", 2))
 
         # 会话策略
-        self.use_current_conversation = bool(self._cfg("use_current_conversation", False))
-        self.use_framework_tool_manager = bool(self._cfg("use_framework_tool_manager", False))
+        self.use_current_conversation = bool(self._cfg("use_current_conversation", True))
+        self.use_framework_tool_manager = bool(self._cfg("use_framework_tool_manager", True))
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.0.0")
+        # 远程URL安全策略（SSRF防护）
+        self.allow_remote_audio_url = bool(self._cfg("allow_remote_audio_url", False))
+        self.remote_audio_domain_whitelist = [str(x).lower() for x in self._cfg("remote_audio_domain_whitelist", [])]
+        self.block_private_network = bool(self._cfg("block_private_network", True))
+
+        # 复用 session
+        self._session: Optional[aiohttp.ClientSession] = None
+
+        logger.info("[GeminiSTTBridge] 插件已加载 v2.2.0")
         logger.info(f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}")
         logger.info(f"[GeminiSTTBridge] stop_timing={self.stop_event_timing}, on_stt_fail={self.on_stt_fail}")
         logger.info(f"[GeminiSTTBridge] ffmpeg={'✓' if self.ffmpeg_path else '✗'}, pilk={'✓' if PILK_AVAILABLE else '✗'}")
@@ -76,12 +90,28 @@ class GeminiSTTBridge(Star):
         if self.debug:
             logger.info(f"[GeminiSTTBridge] {msg}")
 
+    # ---------------- 生命周期 ----------------
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session
+
+    async def terminate(self):
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+        except Exception:
+            pass
+
     # ---------------- 基础工具 ----------------
 
     def _find_ffmpeg(self):
         custom = self._cfg("ffmpeg_path", "")
         if custom and os.path.exists(custom):
             return custom
+
         name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
         try:
             r = subprocess.run([name, "-version"], capture_output=True, timeout=5)
@@ -104,11 +134,32 @@ class GeminiSTTBridge(Star):
         t = (text or "").strip()
         if not self.enable_transcript_clean:
             return t
-        # 去掉多余空行
         t = re.sub(r"\n{3,}", "\n\n", t)
-        # 截断超长
         if len(t) > self.max_transcript_chars:
             t = t[: self.max_transcript_chars].rstrip() + "..."
+        return t
+
+    def _extract_plain_transcript(self, stt_text: str) -> str:
+        """
+        从 rich 输出中尽量提取“原话转写”
+        兼容:
+          1) 原话转写：xxx
+          1) **原话转写**：xxx
+          原话转写: xxx
+          转写：xxx
+        """
+        t = (stt_text or "").strip()
+        if not t:
+            return ""
+
+        patterns = [
+            r"(?:^|\n)\s*(?:1[.)、]\s*)?(?:\*\*)?\s*原话转写\s*(?:\*\*)?\s*[：:]\s*(.+)",
+            r"(?:^|\n)\s*(?:\*\*)?\s*转写\s*(?:\*\*)?\s*[：:]\s*(.+)"
+        ]
+        for p in patterns:
+            m = re.search(p, t, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
         return t
 
     # ---------------- 群聊过滤 ----------------
@@ -127,7 +178,6 @@ class GeminiSTTBridge(Star):
             mt = str(event.message_obj.message_type).lower()
             if "group" in mt:
                 return True
-
         return False
 
     def _get_group_id(self, event: AstrMessageEvent) -> str:
@@ -158,13 +208,76 @@ class GeminiSTTBridge(Star):
                 return False
         return True
 
+    # ---------------- URL安全（SSRF） ----------------
+
+    def _is_private_ip(self, ip: str) -> bool:
+        try:
+            obj = ipaddress.ip_address(ip)
+            return (
+                obj.is_private
+                or obj.is_loopback
+                or obj.is_link_local
+                or obj.is_reserved
+                or obj.is_multicast
+            )
+        except Exception:
+            return True
+
+    def _is_safe_remote_url(self, url: str) -> bool:
+        if not self.allow_remote_audio_url:
+            return False
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        host = (parsed.hostname or "").lower().strip()
+        if not host:
+            return False
+
+        # 域名白名单（若配置了则强制命中）
+        if self.remote_audio_domain_whitelist:
+            if host not in self.remote_audio_domain_whitelist:
+                self._d(f"远程域名不在白名单: {host}")
+                return False
+
+        # 明确拦截 localhost
+        if host in ("localhost",):
+            return False
+
+        if not self.block_private_network:
+            return True
+
+        # host是字面IP
+        try:
+            ipaddress.ip_address(host)
+            return not self._is_private_ip(host)
+        except Exception:
+            pass
+
+        # 解析域名并检查所有IP
+        try:
+            infos = socket.getaddrinfo(host, parsed.port or 80, proto=socket.IPPROTO_TCP)
+            ips = {x[4][0] for x in infos if x and x[4]}
+            if not ips:
+                return False
+            for ip in ips:
+                if self._is_private_ip(ip):
+                    self._d(f"远程URL解析到私网IP，已拦截: {host} -> {ip}")
+                    return False
+            return True
+        except Exception as e:
+            self._d(f"域名解析失败，默认拦截: {host}, err={e}")
+            return False
+
     # ---------------- 音频处理 ----------------
 
     def _detect_audio_format(self, file_path: str) -> str:
         try:
             with open(file_path, "rb") as f:
                 header = f.read(32)
-            if b"SILK" in header or header[:2] in [b"\x02\x00", b"\x01\x00"]:
+
+            if b"SILK" in header:
                 return "silk"
             if header.startswith(b"#!AMR"):
                 return "amr"
@@ -177,21 +290,24 @@ class GeminiSTTBridge(Star):
             return "unknown"
 
     async def _download_remote_audio(self, url: str) -> str:
+        if not self._is_safe_remote_url(url):
+            self._d("远程语音URL被安全策略拦截")
+            return ""
+
         suffix = ".bin"
         for ext in [".mp3", ".wav", ".amr", ".silk"]:
-            if ext in url:
+            if ext in url.lower():
                 suffix = ext
                 break
 
         tmp_path = os.path.join(tempfile.gettempdir(), f"gsv_url_{os.urandom(4).hex()}{suffix}")
         try:
-            timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        self._d(f"远程语音下载失败: {resp.status}")
-                        return ""
-                    data = await resp.read()
+            session = await self._get_session()
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    self._d(f"远程语音下载失败: {resp.status}")
+                    return ""
+                data = await resp.read()
 
             if len(data) > self.max_audio_mb * 1024 * 1024:
                 self._d(f"远程语音超大小限制: {len(data)} bytes")
@@ -247,10 +363,7 @@ class GeminiSTTBridge(Star):
             return ""
 
     async def _get_voice_data(self, record_comp) -> Tuple[Optional[str], Optional[str]]:
-        """
-        返回 (audio_b64, mime)
-        """
-        temp_files_to_clean = []
+        temp_files_to_clean: List[str] = []
         try:
             path_attr = getattr(record_comp, "path", None) or getattr(record_comp, "url", None)
             if not path_attr:
@@ -343,41 +456,21 @@ class GeminiSTTBridge(Star):
         return f"{base}/v1beta/models/{model}:generateContent"
 
     def _build_stt_instruction(self) -> str:
-        custom = self._cfg("voice_instruction", "")
+        custom = (self._cfg("voice_instruction", "") or "").strip()
         if custom:
             return custom
 
         if self.output_mode == "rich":
             return (
-                "请仅做语音转写与信息提取，不要回答用户问题。"
-                "输出格式："
-                "1) 原话转写；"
-                "2) 语言；"
-                "3) 语气/情绪；"
-                "4) 环境音；"
-                "5) 大意总结（1句）。"
+                "你是语音转写器。只做识别与信息提取，不要回答用户。"
+                "请输出：1) 原话转写 2) 语言 3) 语气/情绪 4) 环境音 5) 大意总结。"
             )
-        return "请仅输出用户语音的原话转写，不要解释，不要回答。"
 
-    def _extract_plain_transcript(self, stt_text: str) -> str:
-        """
-        从 rich 文本中提取“原话转写”，simple 直接返回原文
-        """
-        t = (stt_text or "").strip()
-        if not t:
-            return ""
-
-        # 兼容 "1) 原话转写：xxx"
-        m = re.search(r"(?:^|\n)\s*(?:1[.)、]\s*)?原话转写[：:]\s*(.+)", t)
-        if m:
-            return m.group(1).strip()
-
-        # 兼容 "转写：xxx"
-        m2 = re.search(r"(?:^|\n)\s*转写[：:]\s*(.+)", t)
-        if m2:
-            return m2.group(1).strip()
-
-        return t
+        # simple
+        return (
+            "你是语音转写器。只输出“原话转写”的纯文本内容。"
+            "不要解释，不要总结，不要加编号，不要加Markdown格式。"
+        )
 
     async def _call_gemini_stt(self, audio_b64: str, audio_mime: str, user_text: str) -> str:
         api_url = self._cfg("api_url", "")
@@ -415,39 +508,46 @@ class GeminiSTTBridge(Star):
 
         for i in range(self.retry_times + 1):
             try:
-                timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(url, headers=headers, json=payload) as resp:
-                        raw = await resp.text()
+                session = await self._get_session()
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    raw = await resp.text()
 
-                        if resp.status == 200:
-                            data = await resp.json()
-                            cands = data.get("candidates", [])
-                            if not cands:
-                                self._d("Gemini返回空candidates")
-                                return ""
-
-                            parts = cands[0].get("content", {}).get("parts", [])
-                            for p in parts:
-                                text = p.get("text")
-                                if text and text.strip():
-                                    return text.strip()
-
-                            self._d("Gemini返回parts中无text")
+                    if resp.status == 200:
+                        try:
+                            data = json.loads(raw)
+                        except Exception:
+                            self._d(f"Gemini返回非JSON: {raw[:200]}")
                             return ""
 
-                        if resp.status >= 500 and i < self.retry_times:
-                            self._d(f"Gemini {resp.status}，第{i+1}次重试")
-                            await asyncio.sleep(1.2 * (i + 1))
-                            continue
+                        cands = data.get("candidates", [])
+                        if not cands:
+                            self._d("Gemini返回空candidates")
+                            return ""
 
-                        self._d(f"Gemini失败: {resp.status} - {raw[:300]}")
+                        parts = cands[0].get("content", {}).get("parts", [])
+                        for p in parts:
+                            text = p.get("text")
+                            if text and text.strip():
+                                return text.strip()
+
+                        self._d("Gemini返回parts中无text")
                         return ""
+
+                    # 可重试状态
+                    if (resp.status >= 500 or resp.status == 429) and i < self.retry_times:
+                        wait_sec = min(2 ** i, 8) + random.uniform(0, 0.3)
+                        self._d(f"Gemini {resp.status}，第{i+1}次重试，等待{wait_sec:.2f}s")
+                        await asyncio.sleep(wait_sec)
+                        continue
+
+                    self._d(f"Gemini失败: {resp.status} - {raw[:300]}")
+                    return ""
 
             except Exception as e:
                 if i < self.retry_times:
-                    self._d(f"Gemini异常重试({i+1}): {e}")
-                    await asyncio.sleep(1.0 * (i + 1))
+                    wait_sec = min(2 ** i, 8) + random.uniform(0, 0.3)
+                    self._d(f"Gemini异常重试({i+1}): {e}，等待{wait_sec:.2f}s")
+                    await asyncio.sleep(wait_sec)
                     continue
                 self._d(f"Gemini异常: {e}")
                 return ""
@@ -460,22 +560,49 @@ class GeminiSTTBridge(Star):
         """
         on_stt_fail:
         - pass: 放行后续插件
-        - block: 直接吞掉
-        - notify: 通知失败并吞掉
+        - block: 拦截并静默
+        - notify: 拦截并提示
+        - notify_pass: 提示后放行
         """
         action = self.on_stt_fail
+
         if action == "notify":
             if self.stop_other_handlers:
                 event.stop_event()
             yield event.plain_result("⚠️ 语音识别失败")
             return
-        elif action == "block":
+
+        if action == "block":
             if self.stop_other_handlers:
                 event.stop_event()
             return
-        else:
-            # pass
+
+        if action == "notify_pass":
+            yield event.plain_result("⚠️ 语音识别失败，已放行后续插件处理。")
             return
+
+        # pass
+        return
+
+    # ---------------- 转发文本构造 ----------------
+
+    def _build_forward_text(self, event: AstrMessageEvent, final_text: str) -> str:
+        lines: List[str] = []
+
+        if self.attach_voice_marker:
+            lines.append("（以下内容来自语音转写）")
+
+        if self.attach_speaker_meta:
+            sender_name = event.get_sender_name() if hasattr(event, "get_sender_name") else "unknown"
+            sender_id = event.get_sender_id() if hasattr(event, "get_sender_id") else "unknown"
+            group_id = event.get_group_id() if hasattr(event, "get_group_id") else ""
+            platform = event.get_platform_name() if hasattr(event, "get_platform_name") else "unknown"
+
+            lines.append(f"说话人: {sender_name} (ID: {sender_id})")
+            lines.append(f"场景: {'群聊 ' + str(group_id) if group_id else '私聊'} / 平台: {platform}")
+
+        lines.append(final_text.strip())
+        return "\n".join(lines).strip()
 
     # ---------------- 事件入口 ----------------
 
@@ -499,18 +626,18 @@ class GeminiSTTBridge(Star):
                     if txt and txt.strip():
                         text_parts.append(txt.strip())
 
-            # 非语音，不干预，交给后续插件
+            # 非语音，不干预
             if not voice_comp:
                 return
 
             if not self._should_process_voice(event):
                 return
 
-            # 对于 on_stt_fail=pass，不能 before_stt stop（否则没法放行）
+            # 若失败要放行(pass/notify_pass)，before_stt不能提前stop
             effective_before_stop = (
                 self.stop_other_handlers
                 and self.stop_event_timing == "before_stt"
-                and self.on_stt_fail != "pass"
+                and self.on_stt_fail not in ("pass", "notify_pass")
             )
 
             if effective_before_stop:
@@ -543,24 +670,17 @@ class GeminiSTTBridge(Star):
                     yield r
                 return
 
+            # 成功后拦截原语音，避免二次处理
+            if self.stop_other_handlers and self.stop_event_timing in ("after_stt", "before_stt"):
+                event.stop_event()
+
             if self.show_transcript:
                 yield event.plain_result(f"📝 识别结果：{final_text}")
 
-            if self.attach_voice_marker:
-                forward_text = (
-                    "[INPUT_TYPE=VOICE]\n"
-                    "[SOURCE=GEMINI_STT]\n"
-                    f"{final_text}"
-                ).strip()
-            else:
-                forward_text = final_text
+            forward_text = self._build_forward_text(event, final_text)
 
             self._d(f"output_mode={self.output_mode}, final_len={len(final_text)}")
             self._d(f"forward_preview={forward_text[:220]}")
-
-            # after_stt/never 策略
-            if self.stop_other_handlers and self.stop_event_timing == "after_stt":
-                event.stop_event()
 
             # 会话参数
             session_id = None
