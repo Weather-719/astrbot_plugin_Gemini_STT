@@ -1,0 +1,9 @@
+name: "gemini_stt_bridge"
+author: "Weather"
+description: "Gemini语音转写桥接插件：将语音转文本后交由AstrBot框架继续回复"
+version: "2.1.0"
+repo: ""
+tags: ["AstrBot", "语音", "STT", "Gemini", "桥接"]
+license: "MIT"
+python_version: ">=3.10"
+astrbot_version: ">=3.4.0"
