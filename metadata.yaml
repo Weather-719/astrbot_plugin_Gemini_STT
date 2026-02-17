@@ -2,7 +2,7 @@ name: "astrbot_plugin_Gemini_STT"
 author: "政ひかりはる"
 description: "使用Gemini模型来实现STT(分析特别详细哦)"
 version: "2.1.0"
-repo: ""
+repo: "https://github.com/Weather-719/astrbot_plugin_Gemini_STT"
 tags: ["AstrBot", "语音", "STT", "Gemini", "桥接"]
 license: "MIT"
 python_version: ">=3.10"
