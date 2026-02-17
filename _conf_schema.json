@@ -1,0 +1,139 @@
+{
+  "api_url": {
+    "description": "Gemini/OpenAI兼容基地址",
+    "type": "string",
+    "hint": "API地址",
+    "default": ""
+  },
+  "api_key": {
+    "description": "API 密钥",
+    "type": "string",
+    "default": "",
+    "obvious_hint": true
+  },
+  "model": {
+    "description": "模型ID",
+    "type": "string",
+    "default": "gemini-2.0-flash"
+  },
+
+  "debug_mode": {
+    "description": "调试模式",
+    "type": "bool",
+    "default": false
+  },
+  "enable_voice": {
+    "description": "启用语音处理",
+    "type": "bool",
+    "default": true
+  },
+
+  "enable_group_voice": {
+    "description": "启用群聊语音",
+    "type": "bool",
+    "default": false
+  },
+  "group_voice_whitelist": {
+    "description": "群聊白名单",
+    "hint": "群号字符串列表，留空表示不限制，如 [\"123456\", \"789012\"]",
+    "type": "list",
+    "default": []
+  },
+
+  "stop_other_handlers": {
+    "description": "是否阻止后续插件继续处理原语音事件",
+    "type": "bool",
+    "default": true
+  },
+  "stop_event_timing": {
+    "description": "拦截时机",
+    "hint": "before_stt=识别前拦截，after_stt=识别后拦截，never=不拦截",
+    "type": "string",
+    "options": ["before_stt", "after_stt", "never"],
+    "default": "before_stt"
+  },
+  "on_stt_fail": {
+    "description": "识别失败策略",
+    "hint": "notify模式会向用户发送“识别失败”的提示消息",
+    "type": "string",
+    "options": ["pass", "block", "notify"],
+    "default": "pass"
+  },
+
+  "output_mode": {
+    "description": "输出模式",
+    "hint": "simple=仅原话，rich=详细信息（语言/语气/环境音/大意）",
+    "type": "string",
+    "options": ["simple", "rich"],
+    "default": "simple"
+  },
+  "attach_voice_marker": {
+    "description": "是否给框架附加语音来源标记",
+    "type": "bool",
+    "default": true
+  },
+  "show_transcript": {
+    "description": "是否先回显识别结果（调试用）",
+    "type": "bool",
+    "default": false
+  },
+
+  "enable_model_normalize": {
+    "description": "启用模型名清洗",
+    "hint": "去掉站点前缀、[标签]、models/",
+    "type": "bool",
+    "default": true
+  },
+  "enable_transcript_clean": {
+    "description": "启用转写文本清洗",
+    "hint": "去空行/截断",
+    "type": "bool",
+    "default": true
+  },
+  "max_transcript_chars": {
+    "description": "转写文本最大长度",
+    "hint": "超过会截断",
+    "type": "int",
+    "default": 2000
+  },
+
+  "voice_instruction": {
+    "description": "自定义语音识别提示词",
+    "hint": "留空则按输出模式自动生成",
+    "type": "text",
+    "default": ""
+  },
+
+  "ffmpeg_path": {
+    "description": "FFmpeg 路径",
+    "hint": "（留空则使用系统环境变量）",
+    "type": "string",
+    "default": ""
+  },
+  "max_audio_mb": {
+    "description": "语音大小上限(MB)",
+    "type": "int",
+    "default": 20
+  },
+  "timeout_sec": {
+    "description": "请求超时秒数",
+    "type": "int",
+    "default": 120
+  },
+  "retry_times": {
+    "description": "请求重试次数（仅5xx/异常重试）",
+    "type": "int",
+    "default": 2
+  },
+
+  "use_current_conversation": {
+    "description": "是否绑定当前会话ID与conversation转发给框架",
+    "type": "bool",
+    "default": false
+  },
+  "use_framework_tool_manager": {
+    "description": "request_llm 时是否传入框架工具管理器",
+    "type": "bool",
+    "default": false
+  }
+}
