@@ -1,4 +1,4 @@
-# Gemini STT Bridge for AstrBot
+<img width="761" height="280" alt="image" src="https://github.com/user-attachments/assets/370ee025-3e7e-4b23-9c3d-c573222a1aef" /># Gemini STT Bridge for AstrBot
 
 一个面向 AstrBot 的语音桥接插件：  
 **将语音消息自动转写为文本，并交由框架继续按正常会话流程回复。**
@@ -72,6 +72,13 @@
 simple 模式下模型偶发输出 rich 风格文本
 
 某些下游钩子（防抖/注入防护）可能终止 LLM 请求导致空回复
+
+---
+## 目前可以正常使用的配置仅供参考
+
+<img width="771" height="514" alt="image" src="https://github.com/user-attachments/assets/ef89c502-47d8-4553-a820-955763c24f91" />
+<img width="761" height="280" alt="image" src="https://github.com/user-attachments/assets/31d96a0d-98da-4388-9433-a15b32ad2a79" />
+<img width="780" height="537" alt="image" src="https://github.com/user-attachments/assets/9e6f1677-16d0-4873-a32b-b9a019c3c31f" />
 
 ---
 
