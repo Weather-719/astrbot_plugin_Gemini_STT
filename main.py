@@ -66,7 +66,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("gemini_stt_bridge", "Weather", "Gemini语音转写桥接到框架LLM", "2.3.1")
+@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.3.1")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
