@@ -1,4 +1,4 @@
-<img width="761" height="280" alt="image" src="https://github.com/user-attachments/assets/370ee025-3e7e-4b23-9c3d-c573222a1aef" /># Gemini STT Bridge for AstrBot
+# Gemini STT Bridge for AstrBot
 
 一个面向 AstrBot 的语音桥接插件：  
 **将语音消息自动转写为文本，并交由框架继续按正常会话流程回复。**
