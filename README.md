@@ -67,9 +67,7 @@
 ## ⚠️ 已知问题（持续优化中）
 在复杂插件链路下，可能出现以下情况：
 
-偶发双链路处理（同一语音被重复处理）
-
-simple 模式下模型偶发输出 rich 风格文本
+偶发双链路处理（同一语音被重复处理） 已解决和SpectreCore一起会有问题
 
 某些下游钩子（防抖/注入防护）可能终止 LLM 请求导致空回复
 
@@ -102,25 +100,6 @@ enable_model_normalize = true：建议开启，可自动清洗带标签模型名
 use_current_conversation：是否绑定当前会话转发
 
 use_framework_tool_manager：是否传入框架工具管理器
-
----
-
-## 🧪 排障建议
-开启 debug_mode = true
-
-观察日志中的：
-
-音频格式识别结果
-
-最终 Gemini URL
-
-final_len / forward_preview
-
-是否有下游 终止了事件传播 日志
-
-先用 output_mode=simple + 纯文本转发验证主链路；
-
-再逐步开启 marker、speaker meta、rich 模式。
 
 ---
 
