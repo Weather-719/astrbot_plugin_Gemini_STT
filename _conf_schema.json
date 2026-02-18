@@ -55,7 +55,7 @@
     "description": "拦截时机",
     "type": "string",
     "options": ["before_stt", "after_stt", "never"],
-    "hint": "before_stt=识别前拦截；after_stt=识别成功后拦截（推荐）；never=不拦截",
+    "hint": "before_stt=识别前拦截；after_stt=识别成功后拦截；never=不拦截（推荐）",
     "default": "never"
   },
   "on_stt_fail": {
@@ -187,3 +187,4 @@
     "default": ["data", "data/temp"]
   }
 }
+
