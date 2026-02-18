@@ -1,5 +1,7 @@
 # Gemini STT Bridge for AstrBot
 
+# 主要现在只有使用never模式才可以正常使用
+
 一个面向 AstrBot 的语音桥接插件：  
 **将语音消息自动转写为文本，并交由框架继续按正常会话流程回复。**
 
