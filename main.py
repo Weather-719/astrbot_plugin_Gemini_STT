@@ -929,7 +929,7 @@ class GeminiSTTBridge(Star):
                     yield r
                 return
 
-            #if self._should_stop_after_stt_success():   测试二次回复问题
+            if self._should_stop_after_stt_success():
                 event.stop_event()
 
             if self.show_transcript:
@@ -954,3 +954,4 @@ class GeminiSTTBridge(Star):
             )
         except Exception as e:
             logger.error(f"[GeminiSTTBridge] 处理失败: {e}")
+
