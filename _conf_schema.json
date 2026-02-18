@@ -173,5 +173,17 @@
     "type": "bool",
     "hint": "建议开启，防止访问 127.0.0.1/10.x/192.168.x/169.254.x 等",
     "default": true
+  },
+  "strict_local_path_check": {
+    "description": "启用本地语音路径白名单校验",
+    "type": "bool",
+    "hint": "建议开启，仅允许读取指定目录下音频文件",
+    "default": true
+  },
+  "local_audio_allowed_dirs": {
+    "description": "本地语音允许目录",
+    "type": "list",
+    "hint": "示例: [\"/tmp\", \"data\", \"data/temp\"]；严格模式下仅允许这些目录",
+    "default": ["data", "data/temp"]
   }
 }
