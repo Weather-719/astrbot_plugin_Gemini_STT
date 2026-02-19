@@ -16,6 +16,7 @@ import ipaddress
 import tempfile
 import asyncio
 import subprocess
+import time
 from urllib.parse import urlparse
 from typing import Optional, Tuple, List, Dict, Set
 
@@ -81,7 +82,7 @@ class GeminiSTTBridge(Star):
         self.enable_group_voice = bool(self._cfg("enable_group_voice", False))
         self.group_voice_whitelist = [str(g) for g in self._cfg("group_voice_whitelist", [])]
 
-        # 行为策略（与 schema 对齐）
+        # 行为策略
         self.stop_other_handlers = bool(self._cfg("stop_other_handlers", False))
         self.stop_event_timing = self._cfg("stop_event_timing", "never")  # before_stt / after_stt / never
         self.on_stt_fail = self._cfg("on_stt_fail", "notify_pass")  # pass / block / notify / notify_pass
@@ -101,6 +102,11 @@ class GeminiSTTBridge(Star):
         self.max_audio_mb = int(self._cfg("max_audio_mb", 20))
         self.timeout_sec = int(self._cfg("timeout_sec", 120))
         self.retry_times = int(self._cfg("retry_times", 2))
+
+        # 本地文件等待/兜底策略
+        self.voice_file_wait_sec = int(self._cfg("voice_file_wait_sec", 10))
+        self.enable_get_record_fallback = bool(self._cfg("enable_get_record_fallback", True))
+        self.allow_napcat_local_record_url = bool(self._cfg("allow_napcat_local_record_url", True))
 
         # 会话策略
         self.use_current_conversation = bool(self._cfg("use_current_conversation", True))
@@ -122,8 +128,20 @@ class GeminiSTTBridge(Star):
             )
         )
 
+        # 临时文件清理策略
+        self.enable_temp_cleanup = bool(self._cfg("enable_temp_cleanup", True))
+        self.temp_cleanup_on_start = bool(self._cfg("temp_cleanup_on_start", True))
+        self.temp_cleanup_interval_sec = int(self._cfg("temp_cleanup_interval_sec", 1800))
+        self.temp_cleanup_max_age_sec = int(self._cfg("temp_cleanup_max_age_sec", 300))
+        self.temp_cleanup_on_terminate = bool(self._cfg("temp_cleanup_on_terminate", True))
+
         # 复用 session（Gemini 请求）
         self._session: Optional[aiohttp.ClientSession] = None
+
+        # 清理任务状态
+        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_bootstrapped = False
+        self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
         logger.info("[GeminiSTTBridge] 插件已加载 v2.3.1")
         logger.info(
@@ -160,7 +178,90 @@ class GeminiSTTBridge(Star):
             self._session = aiohttp.ClientSession(timeout=timeout, trust_env=False)
         return self._session
 
+    async def _bootstrap_temp_cleanup_once(self):
+        """首次启动时做一次清理并启动定时任务（懒启动）"""
+        if self._cleanup_bootstrapped:
+            return
+        self._cleanup_bootstrapped = True
+
+        if not self.enable_temp_cleanup:
+            return
+
+        if self.temp_cleanup_on_start:
+            removed = self._cleanup_temp_files(older_than_sec=0)
+            self._d(f"启动清理完成，删除临时文件: {removed}")
+
+        if self.temp_cleanup_interval_sec > 0:
+            try:
+                self._cleanup_task = asyncio.create_task(self._periodic_cleanup_loop())
+                self._d(f"已启动定时清理任务，间隔={self.temp_cleanup_interval_sec}s")
+            except Exception as e:
+                self._d(f"启动定时清理任务失败: {e}")
+
+    async def _periodic_cleanup_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(max(1, self.temp_cleanup_interval_sec))
+                removed = self._cleanup_temp_files(older_than_sec=max(0, self.temp_cleanup_max_age_sec))
+                if removed > 0:
+                    self._d(f"定时清理完成，删除临时文件: {removed}")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            self._d(f"定时清理异常: {e}")
+
+    def _cleanup_temp_files(self, older_than_sec: int = 0) -> int:
+        """清理插件临时文件（仅 gsv_* 前缀）"""
+        if not self.enable_temp_cleanup:
+            return 0
+
+        now = time.time()
+        removed = 0
+        dirs = {os.path.realpath(tempfile.gettempdir()), os.path.realpath(os.path.abspath("data/temp"))}
+
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            try:
+                for name in os.listdir(d):
+                    if not name.startswith(self._cleanup_prefixes):
+                        continue
+                    path = os.path.join(d, name)
+                    if not os.path.isfile(path):
+                        continue
+
+                    try:
+                        if older_than_sec > 0:
+                            age = now - os.path.getmtime(path)
+                            if age < older_than_sec:
+                                continue
+                        os.remove(path)
+                        removed += 1
+                    except Exception as e:
+                        self._d(f"删除临时文件失败: {path}, err={e}")
+            except Exception as e:
+                self._d(f"扫描清理目录失败: {d}, err={e}")
+
+        return removed
+
     async def terminate(self):
+        try:
+            if self._cleanup_task and not self._cleanup_task.done():
+                self._cleanup_task.cancel()
+                try:
+                    await self._cleanup_task
+                except Exception:
+                    pass
+        except Exception as e:
+            self._d(f"terminate cancel cleanup task error: {e}")
+
+        try:
+            if self.temp_cleanup_on_terminate:
+                removed = self._cleanup_temp_files(older_than_sec=0)
+                self._d(f"terminate 清理完成，删除临时文件: {removed}")
+        except Exception as e:
+            self._d(f"terminate cleanup temp error: {e}")
+
         try:
             if self._session and not self._session.closed:
                 await self._session.close()
@@ -227,12 +328,6 @@ class GeminiSTTBridge(Star):
     def _extract_plain_transcript(self, stt_text: str) -> str:
         """
         从 rich 输出中尽量提取“原话转写”
-        兼容：
-          1) 原话转写：xxx
-          1) **原话转写**：xxx
-          原话转写:
-          xxx
-          转写：xxx
         """
         t = (stt_text or "").strip()
         if not t:
@@ -396,22 +491,25 @@ class GeminiSTTBridge(Star):
             self._d(f"远程域名解析失败: {host}, err={e}")
             return False, None
 
+    def _is_loopback_host(self, host: str) -> bool:
+        h = (host or "").strip().lower()
+        if h == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(h).is_loopback
+        except Exception:
+            return False
+
     # ---------------- 本地路径安全 ----------------
 
     def _suggest_allowed_dirs(self, blocked_path: str) -> List[str]:
-        """
-        给出建议加入 local_audio_allowed_dirs 的目录。
-        优先给稳定目录（如 .../Ptt），避免每月目录变化。
-        """
         p = os.path.realpath(blocked_path)
         suggestions: List[str] = []
 
-        # 1) 文件所在目录
         d = os.path.dirname(p)
         if d:
             suggestions.append(d)
 
-        # 2) 若路径中含 /Ptt/，建议提升到 Ptt 根目录
         norm = p.replace("\\", "/")
         idx = norm.lower().find("/ptt/")
         if idx != -1:
@@ -419,7 +517,6 @@ class GeminiSTTBridge(Star):
             if ptt_root:
                 suggestions.append(os.path.realpath(ptt_root))
 
-        # 去重 + 过滤已存在
         out = []
         for s in suggestions:
             s = os.path.realpath(s)
@@ -431,6 +528,14 @@ class GeminiSTTBridge(Star):
         rp = os.path.realpath(path)
         if not os.path.isfile(rp):
             return False
+
+        # 放行插件自身临时文件
+        tmp_dir = os.path.realpath(tempfile.gettempdir())
+        bn = os.path.basename(rp)
+        if rp.startswith(tmp_dir + os.sep) and (
+            bn.startswith("gsv_") or bn.startswith("gsv_url_") or bn.startswith("gsv_record_")
+        ):
+            return True
 
         ext = os.path.splitext(rp)[1].lower()
         if ext not in (".mp3", ".wav", ".amr", ".silk", ".pcm", ".bin"):
@@ -448,12 +553,8 @@ class GeminiSTTBridge(Star):
                 continue
 
         suggestions = self._suggest_allowed_dirs(rp)
-        best = suggestions[-1] if suggestions else os.path.dirname(rp)  # 优先更稳定的 Ptt 根
-
-        logger.warning(
-           "[GeminiSTTBridge] 语音路径未放行，建议将此目录加入 local_audio_allowed_dirs: %s",
-            best,
-        )
+        best = suggestions[-1] if suggestions else os.path.dirname(rp)
+        logger.warning(f"[GeminiSTTBridge] 语音路径未放行，建议将此目录加入 local_audio_allowed_dirs: {best}")
         return False
 
     # ---------------- 音频处理 ----------------
@@ -538,6 +639,113 @@ class GeminiSTTBridge(Star):
             except Exception as e:
                 self._d(f"resolver close error: {e}")
 
+    async def _download_trusted_record_url(self, url: str) -> str:
+        """
+        专用于 get_record 返回的 URL：
+        block_private_network=True 时，允许按配置放行回环地址。
+        """
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return ""
+
+            host = (parsed.hostname or "").strip().lower()
+            if not host:
+                return ""
+
+            if self.block_private_network:
+                if not self._is_loopback_host(host):
+                    self._d(f"trusted_record_url 非回环地址，拦截: {host}")
+                    return ""
+                if not self.allow_napcat_local_record_url:
+                    self._d(f"trusted_record_url 回环地址被策略禁用: {host}")
+                    return ""
+
+            timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
+            tmp_path = os.path.join(tempfile.gettempdir(), f"gsv_record_{os.urandom(4).hex()}.mp3")
+
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+                async with session.get(url, allow_redirects=False) as resp:
+                    if 300 <= resp.status < 400:
+                        self._d(f"trusted_record_url 拒绝重定向: {resp.status}")
+                        return ""
+                    if resp.status != 200:
+                        self._d(f"trusted_record_url 下载失败: {resp.status}")
+                        return ""
+                    data = await resp.read()
+
+            if not self._file_size_ok(len(data)):
+                self._d(f"trusted_record_url 音频超限: {len(data)} bytes")
+                return ""
+
+            with open(tmp_path, "wb") as f:
+                f.write(data)
+
+            return tmp_path
+        except Exception as e:
+            self._d(f"trusted_record_url 下载异常: {e}")
+            return ""
+
+    def _extract_record_file_token(self, record_comp) -> str:
+        for key in ("file", "id", "path", "url"):
+            v = getattr(record_comp, key, None)
+            if v:
+                return str(v).strip()
+
+        data = getattr(record_comp, "data", None)
+        if isinstance(data, dict):
+            for key in ("file", "id", "path", "url"):
+                v = data.get(key)
+                if v:
+                    return str(v).strip()
+        return ""
+
+    async def _get_record_fallback_path(self, event: AstrMessageEvent, record_comp) -> str:
+        """本地路径不可读时，通过 NapCat get_record 兜底"""
+        if not self.enable_get_record_fallback:
+            return ""
+
+        try:
+            if event.get_platform_name() != "aiocqhttp":
+                return ""
+            if not hasattr(event, "bot") or not hasattr(event.bot, "api"):
+                return ""
+
+            token = self._extract_record_file_token(record_comp)
+            if not token:
+                self._d("get_record兜底：无法提取 token")
+                return ""
+
+            result = await event.bot.api.call_action("get_record", file=token, out_format="mp3")
+            data = result.get("data", {}) if isinstance(result, dict) else {}
+
+            target = ""
+            if isinstance(data, dict):
+                target = data.get("file") or data.get("path") or data.get("url") or ""
+            elif isinstance(data, str):
+                target = data
+
+            target = str(target or "").strip()
+            if not target:
+                self._d("get_record兜底：返回中无 file/path/url")
+                return ""
+
+            if target.startswith("http://") or target.startswith("https://"):
+                host = urlparse(target).hostname or ""
+                if self._is_loopback_host(host):
+                    return await self._download_trusted_record_url(target)
+                return await self._download_remote_audio(target)
+
+            p = os.path.realpath(os.path.abspath(target))
+            if os.path.exists(p):
+                return p
+
+            self._d(f"get_record返回本地路径不存在: {p}")
+            return ""
+        except Exception as e:
+            self._d(f"get_record兜底异常: {e}")
+            return ""
+
     def _convert_silk_to_pcm(self, silk_path: str, pcm_path: str) -> bool:
         if not PILK_AVAILABLE:
             return False
@@ -602,39 +810,62 @@ class GeminiSTTBridge(Star):
             self._d(f"转MP3异常: {e}")
             return ""
 
-    async def _resolve_original_audio_path(self, record_comp) -> str:
+    async def _resolve_original_audio_path(self, event: AstrMessageEvent, record_comp) -> str:
         path_attr = getattr(record_comp, "path", None) or getattr(record_comp, "url", None)
-        if not path_attr:
-            return ""
+        raw = str(path_attr).strip().strip('"').strip("'") if path_attr else ""
 
-        raw = str(path_attr).strip().strip('"').strip("'")
+        # 1) 组件直接给URL
         if raw.startswith("http://") or raw.startswith("https://"):
-            return await self._download_remote_audio(raw)
+            p = await self._download_remote_audio(raw)
+            if p:
+                return p
 
-        original_path = os.path.realpath(os.path.abspath(raw))
-        for _ in range(8):
+        # 2) 本地路径等待落盘
+        if raw:
+            original_path = os.path.realpath(os.path.abspath(raw))
+            wait_sec = max(0, self.voice_file_wait_sec)
+
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + wait_sec
+
+            while True:
+                if os.path.exists(original_path):
+                    break
+                if loop.time() >= deadline:
+                    break
+                await asyncio.sleep(0.25)
+
             if os.path.exists(original_path):
-                break
-            await asyncio.sleep(0.25)
+                if not self._is_safe_local_audio_path(original_path):
+                    return ""
+                size = os.path.getsize(original_path)
+                if not self._file_size_ok(size):
+                    self._d(f"本地语音超大小限制: {size} bytes")
+                    return ""
+                return original_path
 
-        if not os.path.exists(original_path):
-            self._d(f"语音文件不存在: {original_path}")
+            self._d(f"语音文件不存在(等待{wait_sec}s后): {original_path}")
+
+        # 3) get_record兜底
+        fallback = await self._get_record_fallback_path(event, record_comp)
+        if not fallback:
             return ""
 
-        if not self._is_safe_local_audio_path(original_path):
+        if not self._is_safe_local_audio_path(fallback):
             return ""
 
-        size = os.path.getsize(original_path)
+        size = os.path.getsize(fallback)
         if not self._file_size_ok(size):
-            self._d(f"本地语音超大小限制: {size} bytes")
+            self._d(f"兜底语音超大小限制: {size} bytes")
             return ""
 
-        return original_path
+        self._d(f"get_record兜底成功: {fallback}")
+        return fallback
 
-    async def _get_voice_data(self, record_comp) -> Tuple[Optional[str], Optional[str]]:
+    async def _get_voice_data(self, event: AstrMessageEvent, record_comp) -> Tuple[Optional[str], Optional[str]]:
         temp_files_to_clean: List[str] = []
         try:
-            original_path = await self._resolve_original_audio_path(record_comp)
+            original_path = await self._resolve_original_audio_path(event, record_comp)
             if not original_path:
                 return None, None
 
@@ -866,11 +1097,28 @@ class GeminiSTTBridge(Star):
 
         return session_id, conversation
 
+    def _get_messages(self, event: AstrMessageEvent):
+        """
+        优先使用框架公开API，避免直接依赖 event.message_obj.message 内部结构。
+        """
+        if hasattr(event, "get_messages"):
+            try:
+                msgs = event.get_messages()
+                if msgs is not None:
+                    return msgs
+            except Exception as e:
+                self._d(f"event.get_messages() 失败，回退 message_obj.message: {e}")
+
+        if hasattr(event, "message_obj") and hasattr(event.message_obj, "message"):
+            return event.message_obj.message or []
+
+        return []
+
     def _extract_components(self, event: AstrMessageEvent):
         voice_comp = None
         text_parts = []
 
-        for comp in event.message_obj.message:
+        for comp in self._get_messages(event):
             cname = type(comp).__name__
             if cname == "Record":
                 voice_comp = comp
@@ -892,14 +1140,12 @@ class GeminiSTTBridge(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
     async def handle_voice(self, event: AstrMessageEvent):
         try:
+            await self._bootstrap_temp_cleanup_once()
+
             if not self.enable_voice:
                 return
 
-            if not hasattr(event, "message_obj") or not hasattr(event.message_obj, "message"):
-                return
-
             voice_comp, user_text = self._extract_components(event)
-
             if not voice_comp:
                 return
 
@@ -909,7 +1155,7 @@ class GeminiSTTBridge(Star):
             if self._should_stop_before_stt():
                 event.stop_event()
 
-            audio_b64, audio_mime = await self._get_voice_data(voice_comp)
+            audio_b64, audio_mime = await self._get_voice_data(event, voice_comp)
             if not audio_b64:
                 async for r in self._handle_stt_fail(event):
                     yield r
@@ -936,7 +1182,6 @@ class GeminiSTTBridge(Star):
                 yield event.plain_result(f"📝 识别结果：{final_text}")
 
             forward_text = self._build_forward_text(event, final_text)
-
             self._d(f"output_mode={self.output_mode}, final_len={len(final_text)}")
             self._d(f"forward_preview={forward_text[:220]}")
 
@@ -954,4 +1199,3 @@ class GeminiSTTBridge(Star):
             )
         except Exception as e:
             logger.error(f"[GeminiSTTBridge] 处理失败: {e}")
-
