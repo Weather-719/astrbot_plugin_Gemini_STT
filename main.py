@@ -67,7 +67,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.3.1")
+@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.3.4")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -143,7 +143,7 @@ class GeminiSTTBridge(Star):
         self._cleanup_bootstrapped = False
         self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.3.1")
+        logger.info("[GeminiSTTBridge] 插件已加载 v2.3.4")
         logger.info(
             f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}, "
             f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}"
