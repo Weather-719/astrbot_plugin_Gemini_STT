@@ -143,6 +143,25 @@
     "default": 2
   },
 
+  "voice_file_wait_sec": {
+    "description": "本地语音文件等待秒数",
+    "type": "int",
+    "hint": "容器/慢磁盘场景下等待语音文件落盘，建议 5~15",
+    "default": 10
+  },
+  "enable_get_record_fallback": {
+    "description": "启用 get_record 兜底",
+    "type": "bool",
+    "hint": "本地路径不存在时，尝试通过 NapCat get_record 获取可读音频",
+    "default": true
+  },
+  "allow_napcat_local_record_url": {
+    "description": "允许 NapCat 回环地址语音URL",
+    "type": "bool",
+    "hint": "当 block_private_network=true 时，是否允许 127.0.0.1/localhost/::1 的 get_record URL",
+    "default": true
+  },
+
   "use_current_conversation": {
     "description": "是否绑定当前会话ID与conversation转发给框架",
     "type": "bool",
@@ -185,6 +204,36 @@
     "type": "list",
     "hint": "示例: [\"/tmp\", \"data\", \"data/temp\"]；严格模式下仅允许这些目录",
     "default": ["data", "data/temp"]
+  },
+
+  "enable_temp_cleanup": {
+    "description": "启用临时文件清理",
+    "type": "bool",
+    "hint": "清理插件生成的 gsv_ 临时音频文件",
+    "default": true
+  },
+  "temp_cleanup_on_start": {
+    "description": "启动/重载时自动清理",
+    "type": "bool",
+    "hint": "插件加载后先清一遍历史残留临时文件",
+    "default": true
+  },
+  "temp_cleanup_interval_sec": {
+    "description": "定时清理间隔(秒)",
+    "type": "int",
+    "hint": "0 表示关闭定时清理；建议 600~3600",
+    "default": 1800
+  },
+  "temp_cleanup_max_age_sec": {
+    "description": "定时清理文件最小年龄(秒)",
+    "type": "int",
+    "hint": "只清理超过该年龄的临时文件，避免删到刚生成文件",
+    "default": 300
+  },
+  "temp_cleanup_on_terminate": {
+    "description": "插件卸载时清理",
+    "type": "bool",
+    "hint": "插件 terminate 时再清一次临时文件",
+    "default": true
   }
 }
-
