@@ -74,13 +74,6 @@
 某些下游钩子（防抖/注入防护）可能终止 LLM 请求导致空回复
 
 ---
-## 目前可以正常使用的配置仅供参考
-
-<img width="771" height="514" alt="image" src="https://github.com/user-attachments/assets/ef89c502-47d8-4553-a820-955763c24f91" />
-<img width="761" height="280" alt="image" src="https://github.com/user-attachments/assets/31d96a0d-98da-4388-9433-a15b32ad2a79" />
-<img width="780" height="537" alt="image" src="https://github.com/user-attachments/assets/9e6f1677-16d0-4873-a32b-b9a019c3c31f" />
-
----
 
 ## ⚙️ 关键配置说明
 1) 语音接管与事件链路
