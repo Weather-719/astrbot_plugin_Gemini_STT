@@ -108,6 +108,10 @@ class GeminiSTTBridge(Star):
         self.enable_get_record_fallback = bool(self._cfg("enable_get_record_fallback", True))
         self.allow_napcat_local_record_url = bool(self._cfg("allow_napcat_local_record_url", True))
 
+        # 路径前缀替换（多容器部署时 NapCat 上报路径与实际挂载路径不符）
+        self.path_remap_from = str(self._cfg("path_remap_from", "") or "").strip()
+        self.path_remap_to = str(self._cfg("path_remap_to", "") or "").strip()
+
         # 会话策略
         self.use_current_conversation = bool(self._cfg("use_current_conversation", True))
         self.use_framework_tool_manager = bool(self._cfg("use_framework_tool_manager", True))
@@ -127,6 +131,11 @@ class GeminiSTTBridge(Star):
                 [os.path.abspath("data"), os.path.abspath("data/temp"), tempfile.gettempdir()],
             )
         )
+
+        # 自适应：自动发现已存在的 NapCat/QQ 目录加入白名单
+        self._auto_discover_allowed_dirs()
+        # 自适应：自动构建路径映射对（仅在未手动配置时生效）
+        self._auto_remap_pairs: List[tuple] = self._build_auto_remap_pairs()
 
         # 临时文件清理策略
         self.enable_temp_cleanup = bool(self._cfg("enable_temp_cleanup", True))
@@ -151,6 +160,11 @@ class GeminiSTTBridge(Star):
         logger.info(
             f"[GeminiSTTBridge] ffmpeg={'✓' if self.ffmpeg_path else '✗'}, pilk={'✓' if PILK_AVAILABLE else '✗'}"
         )
+        if self._auto_remap_pairs:
+            logger.info(
+                f"[GeminiSTTBridge] 自动路径映射: "
+                + ", ".join(f"{s} → {d}" for s, d in self._auto_remap_pairs)
+            )
 
     def _cfg(self, key: str, default=None):
         return self.config.get(key, default)
@@ -164,11 +178,98 @@ class GeminiSTTBridge(Star):
         for d in raw_dirs or []:
             try:
                 rp = os.path.realpath(str(d))
-                if os.path.isdir(rp):
+                if os.path.isdir(rp) and rp not in out:
                     out.append(rp)
             except Exception:
                 continue
         return out
+
+    # NapCat 容器内常见路径（上报路径）
+    _NAPCAT_KNOWN_SOURCES: List[str] = [
+        "/app/.config/QQ",
+        "/app/QQ",
+        "/opt/QQ",
+    ]
+    # AstrBot 侧常见挂载路径（实际可访问路径）
+    _NAPCAT_KNOWN_DESTS: List[str] = [
+        "/root/astrbot/ntqq",
+        "/root/.config/QQ",
+        "/home/user/.config/QQ",
+        "/var/lib/QQ",
+        "/data/QQ",
+        "/app/.config/QQ",   # 同容器部署时 src==dst，无需映射但要放白名单
+    ]
+    # 所有可能独立存在的 NapCat/QQ 数据根目录（用于白名单自动发现）
+    _NAPCAT_COMMON_ROOTS: List[str] = [
+        "/app/.config/QQ",
+        "/root/astrbot/ntqq",
+        "/root/.config/QQ",
+        "/home/user/.config/QQ",
+        "/var/lib/QQ",
+        "/data/QQ",
+        "/opt/QQ",
+    ]
+
+    def _auto_discover_allowed_dirs(self) -> None:
+        """自动将磁盘上已存在的 NapCat/QQ 目录加入路径白名单（自适应）"""
+        added = []
+        for p in self._NAPCAT_COMMON_ROOTS:
+            try:
+                rp = os.path.realpath(p)
+                if os.path.isdir(rp) and rp not in self.local_audio_allowed_dirs:
+                    self.local_audio_allowed_dirs.append(rp)
+                    added.append(rp)
+            except Exception:
+                continue
+        if added:
+            logger.info(f"[GeminiSTTBridge] 自动放行目录（自适应）: {added}")
+
+    def _build_auto_remap_pairs(self) -> List[tuple]:
+        """自动构建路径映射对：NapCat上报路径 → AstrBot实际路径（自适应）
+        仅在用户未手动配置 path_remap_from/to 时生效。
+        """
+        if self.path_remap_from and self.path_remap_to:
+            return []  # 用户已手动配置，跳过自动检测
+
+        pairs = []
+        for src in self._NAPCAT_KNOWN_SOURCES:
+            for dst in self._NAPCAT_KNOWN_DESTS:
+                if src == dst:
+                    continue  # 同路径无需映射
+                if os.path.isdir(os.path.realpath(dst)):
+                    pair = (src.rstrip("/\\"), dst.rstrip("/\\"))
+                    if pair not in pairs:
+                        pairs.append(pair)
+        return pairs
+
+    def _remap_local_path(self, path: str) -> str:
+        """路径前缀替换：先用手动配置，再尝试自动映射对。
+        解决 NapCat 上报容器内路径与 AstrBot 实际挂载路径不一致的问题（自适应）。
+        """
+        if not path:
+            return path
+
+        norm = path.replace("\\", "/")
+
+        # 1. 用户显式配置优先
+        if self.path_remap_from and self.path_remap_to:
+            src = self.path_remap_from.rstrip("/\\")
+            dst = self.path_remap_to.rstrip("/\\")
+            norm_src = src.replace("\\", "/")
+            if norm.startswith(norm_src + "/") or norm == norm_src:
+                remapped = dst + norm[len(norm_src):]
+                self._d(f"路径前缀替换(手动配置): {path} → {remapped}")
+                return remapped
+
+        # 2. 自动映射
+        for src, dst in self._auto_remap_pairs:
+            norm_src = src.replace("\\", "/")
+            if norm.startswith(norm_src + "/") or norm == norm_src:
+                remapped = dst + norm[len(norm_src):]
+                self._d(f"路径前缀替换(自动): {path} → {remapped}")
+                return remapped
+
+        return path
 
     # ---------------- 生命周期 ----------------
 
@@ -554,7 +655,10 @@ class GeminiSTTBridge(Star):
 
         suggestions = self._suggest_allowed_dirs(rp)
         best = suggestions[-1] if suggestions else os.path.dirname(rp)
-        logger.warning(f"[GeminiSTTBridge] 语音路径未放行，建议将此目录加入 local_audio_allowed_dirs: {best}")
+        logger.warning(
+            f"[GeminiSTTBridge] 语音路径未放行: {rp}\n"
+            f"  → 请将此目录加入配置项 local_audio_allowed_dirs: {best}"
+        )
         return False
 
     # ---------------- 音频处理 ----------------
@@ -717,17 +821,63 @@ class GeminiSTTBridge(Star):
                 return ""
 
             result = await event.bot.api.call_action("get_record", file=token, out_format="mp3")
-            data = result.get("data", {}) if isinstance(result, dict) else {}
 
+            # 完整打印原始返回，便于诊断 Linux/NapCat 差异
+            self._d(f"get_record原始返回: {str(result)[:500]}")
+
+            if not isinstance(result, dict):
+                self._d("get_record兜底：返回非dict")
+                return ""
+
+            # NapCat 有两种结构：
+            #   Windows: {"data": {"file": "...", ...}}
+            #   Linux:   {"file": "...", "base64": "...", ...}（扁平，无data包装）
+            data_inner = result.get("data", None)
+            if isinstance(data_inner, dict) and data_inner:
+                lookup = data_inner   # Windows 结构
+            elif isinstance(data_inner, str) and data_inner.strip():
+                # data 本身就是路径字符串
+                target = self._remap_local_path(data_inner.strip())
+                p = os.path.realpath(os.path.abspath(target))
+                if os.path.exists(p):
+                    return p
+                self._d(f"get_record data字符串路径不存在: {p}")
+                return ""
+            else:
+                lookup = result      # Linux 扁平结构，直接用顶层
+
+            # ① 优先：用 base64 字段直接解码（Linux NapCat 最可靠的方式）
+            b64 = str(lookup.get("base64", "") or "").strip()
+            if b64:
+                try:
+                    audio_data = base64.b64decode(b64)
+                    if audio_data and self._file_size_ok(len(audio_data)):
+                        tmp_path = os.path.join(
+                            tempfile.gettempdir(), f"gsv_record_{os.urandom(4).hex()}.mp3"
+                        )
+                        with open(tmp_path, "wb") as f:
+                            f.write(audio_data)
+                        self._d(f"get_record兜底：base64解码成功 -> {tmp_path} ({len(audio_data)} bytes)")
+                        return tmp_path
+                    else:
+                        self._d(f"get_record兜底：base64解码后为空或超限 ({len(audio_data)} bytes)")
+                except Exception as e:
+                    self._d(f"get_record兜底：base64解码失败: {e}")
+
+            # ② 备选：用路径字段（需做路径前缀替换）
             target = ""
-            if isinstance(data, dict):
-                target = data.get("file") or data.get("path") or data.get("url") or ""
-            elif isinstance(data, str):
-                target = data
+            PATH_KEYS = ("file", "path", "url", "file_path", "localPath", "local_path", "filename")
+            for key in PATH_KEYS:
+                v = lookup.get(key)
+                if v and isinstance(v, str) and v.strip():
+                    target = v.strip()
+                    self._d(f"get_record兜底：命中字段 [{key}] = {target[:200]}")
+                    break
 
             target = str(target or "").strip()
             if not target:
-                self._d("get_record兜底：返回中无 file/path/url")
+                logger.info("[GeminiSTTBridge] get_record兜底：返回中无 base64/file/path/url")
+                self._d(f"get_record完整返回结构: {result}")
                 return ""
 
             if target.startswith("http://") or target.startswith("https://"):
@@ -736,6 +886,8 @@ class GeminiSTTBridge(Star):
                     return await self._download_trusted_record_url(target)
                 return await self._download_remote_audio(target)
 
+            # 本地路径：先做前缀替换再检查存在性
+            target = self._remap_local_path(target)
             p = os.path.realpath(os.path.abspath(target))
             if os.path.exists(p):
                 return p
@@ -820,8 +972,9 @@ class GeminiSTTBridge(Star):
             if p:
                 return p
 
-        # 2) 本地路径等待落盘
+        # 2) 本地路径等待落盘（先做路径前缀替换，解决多容器挂载路径不一致问题）
         if raw:
+            raw = self._remap_local_path(raw)
             original_path = os.path.realpath(os.path.abspath(raw))
             wait_sec = max(0, self.voice_file_wait_sec)
 
@@ -938,14 +1091,25 @@ class GeminiSTTBridge(Star):
 
         if self.output_mode == "rich":
             return (
-                "你是语音转写器。只做识别与信息提取，不要回答用户。"
-                "请输出：1) 原话转写 2) 语言 3) 语气/情绪 4) 环境音 5) 大意总结。"
+                "你是一个极为敏感的语音分析器，就像把耳机放在某个场景里被动聆听。"
+                "无论音频是否有人说话，都必须完整输出以下5项（不可省略任何一项）：\n"
+                "1) 原话转写：若有人声则逐字转写；若无人声则写【用户未说话】\n"
+                "2) 语言：识别到的语言，若无人声则写【不适用】\n"
+                "3) 语气/情绪：说话时的情绪；若无人声则写【不适用】\n"
+                "4) 环境音：【最重要】仔细描述音频中一切可感知的声音——包括极其细微的背景杂音、"
+                "风声、键盘声、人群讨论声、音乐声、室内/室外环境特征等。"
+                "哪怕声音极小也要描述，帮助判断录音所处的场景。不得写：无 或 无法判断。\n"
+                "5) 大意总结：综合以上内容用一句话描述这段音频。\n"
+                "不要回答用户，不要对上述内容做任何解释，严格按格式输出。"
             )
 
         return (
-            "你是语音转写器。只输出“原话转写”的纯文本内容。"
-            "不要解释，不要总结，不要加编号，不要加Markdown格式。"
+            "你是一个极为敏感的语音转写器。"
+            "若音频中有人说话，直接输出原话纯文本，无需任何格式。"
+            "若音频中无人说话，输出一句简短描述，例如：用户未说话，环境为轻微键盘声、室内安静。"
+            "不要加任何标题、编号或Markdown格式。"
         )
+
 
     async def _call_gemini_stt(self, audio_b64: str, audio_mime: str, user_text: str) -> str:
         api_url = self._cfg("api_url", "")
@@ -1056,6 +1220,33 @@ class GeminiSTTBridge(Star):
             return
 
         return
+
+    def _is_instruction_hallucination(self, stt_text: str) -> bool:
+        """
+        检测 Gemini 是否将 STT 指令本身作为转写内容返回（空白语音幻觉）。
+        当模型收到无声/空白音频时，有时会把提示词原样输出。
+        """
+        if not stt_text:
+            return False
+
+        instruction = self._build_stt_instruction()
+        # 提取指令中有辨识度的关键词（非通用词）
+        HALLUCINATION_MARKERS = [
+            "你是语音转写器",
+            "只做识别与信息提取",
+            "不要回答用户",
+            "只输出“原话转写”的纯文本",
+            "不要解释，不要总结",
+        ]
+        # 也匹配用户自定义指令的前20字符
+        if instruction:
+            HALLUCINATION_MARKERS.append(instruction[:20])
+
+        matched = sum(1 for m in HALLUCINATION_MARKERS if m in stt_text)
+        if matched >= 2:
+            self._d(f"STT幻觉检测：转写内容疑似重复指令（命中{matched}个标记），判定为无效")
+            return True
+        return False
 
     # ---------------- 转发文本构造 ----------------
 
@@ -1168,6 +1359,14 @@ class GeminiSTTBridge(Star):
                 async for r in self._handle_stt_fail(event):
                     yield r
                 return
+
+            # 空白语音幻觉检测：若模型把指令本身当转写内容返回，
+            # 不做失败处理，改为用兜底文本替换后继续发给 LLM
+            # （任何语音都要处理，哪怕是空白的，也有环境音信息）
+            if self._is_instruction_hallucination(stt_text):
+                logger.warning("[GeminiSTTBridge] 检测到空白语音幻觉，使用兜底转写替代")
+                stt_text = "（未检测到有效语音内容，可能为空白或静音语音）"
+
 
             final_text = self._build_final_text_by_mode(stt_text)
             if not final_text:
