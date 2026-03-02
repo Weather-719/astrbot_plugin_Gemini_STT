@@ -67,7 +67,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.3.5")
+@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.3.6")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -152,7 +152,7 @@ class GeminiSTTBridge(Star):
         self._cleanup_bootstrapped = False
         self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.3.5")
+        logger.info("[GeminiSTTBridge] 插件已加载 v2.3.6")
         logger.info(
             f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}, "
             f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}"
@@ -401,7 +401,7 @@ class GeminiSTTBridge(Star):
             return found
 
         try:
-            r = subprocess.run([name, "-version"], capture_output=True, timeout=5)
+            r = subprocess.run([name, "-version"], capture_output=True, timeout=6)
             if r.returncode == 0:
                 return name
         except Exception:
@@ -823,7 +823,7 @@ class GeminiSTTBridge(Star):
             result = await event.bot.api.call_action("get_record", file=token, out_format="mp3")
 
             # 完整打印原始返回，便于诊断 Linux/NapCat 差异
-            self._d(f"get_record原始返回: {str(result)[:500]}")
+            self._d(f"get_record原始返回: {str(result)[:600]}")
 
             if not isinstance(result, dict):
                 self._d("get_record兜底：返回非dict")
@@ -986,7 +986,7 @@ class GeminiSTTBridge(Star):
                     break
                 if loop.time() >= deadline:
                     break
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.26)
 
             if os.path.exists(original_path):
                 if not self._is_safe_local_audio_path(original_path):
@@ -1092,12 +1092,12 @@ class GeminiSTTBridge(Star):
         if self.output_mode == "rich":
             return (
                 "你是一个极为敏感的语音分析器，就像把耳机放在某个场景里被动聆听。"
-                "无论音频是否有人说话，都必须完整输出以下5项（不可省略任何一项）：\n"
+                "无论音频是否有人说话，都必须完整输出以下6项（不可省略任何一项）：\n"
                 "1) 原话转写：若有人声则逐字转写；若无人声则写【用户未说话】\n"
                 "2) 语言：识别到的语言，若无人声则写【不适用】\n"
                 "3) 语气/情绪：说话时的情绪；若无人声则写【不适用】\n"
                 "4) 环境音：描述音频中可感知的背景声音特征，60字以内，帮助判断录音所处场景。\n"
-                "5) 大意总结：综合以上内容用一句话描述这段音频，30字以内。\n"
+                "6) 大意总结：综合以上内容用一句话描述这段音频，30字以内。\n"
                 "不要回答用户，不要对上述内容做任何解释，严格按格式输出。"
             )
 
@@ -1170,7 +1170,7 @@ class GeminiSTTBridge(Star):
                         self._d("Gemini返回parts中无text")
                         return ""
 
-                    if (resp.status >= 500 or resp.status == 429) and i < self.retry_times:
+                    if (resp.status >= 600 or resp.status == 429) and i < self.retry_times:
                         wait_sec = min(2**i, 8) + random.uniform(0, 0.3)
                         self._d(f"Gemini {resp.status}，第{i + 1}次重试，等待{wait_sec:.2f}s")
                         await asyncio.sleep(wait_sec)
@@ -1400,3 +1400,4 @@ class GeminiSTTBridge(Star):
             )
         except Exception as e:
             logger.error(f"[GeminiSTTBridge] 处理失败: {e}")
+
