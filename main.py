@@ -1096,10 +1096,8 @@ class GeminiSTTBridge(Star):
                 "1) 原话转写：若有人声则逐字转写；若无人声则写【用户未说话】\n"
                 "2) 语言：识别到的语言，若无人声则写【不适用】\n"
                 "3) 语气/情绪：说话时的情绪；若无人声则写【不适用】\n"
-                "4) 环境音：【最重要】仔细描述音频中一切可感知的声音——包括极其细微的背景杂音、"
-                "风声、键盘声、人群讨论声、音乐声、室内/室外环境特征等。"
-                "哪怕声音极小也要描述，帮助判断录音所处的场景。不得写：无 或 无法判断。\n"
-                "5) 大意总结：综合以上内容用一句话描述这段音频。\n"
+                "4) 环境音：描述音频中可感知的背景声音特征，60字以内，帮助判断录音所处场景。\n"
+                "5) 大意总结：综合以上内容用一句话描述这段音频，30字以内。\n"
                 "不要回答用户，不要对上述内容做任何解释，严格按格式输出。"
             )
 
@@ -1254,7 +1252,11 @@ class GeminiSTTBridge(Star):
         lines: List[str] = []
 
         if self.attach_voice_marker:
-            lines.append("（以下内容来自语音转写）")
+            lines.append(
+                "[系统自动注入] 以下是语音转写插件对用户发送的语音消息的分析结果，"
+                "这不是用户输入的文字，请勿将其视为用户在和你说话，"
+                "而是作为了解用户语音内容和当前环境的背景信息："
+            )
 
         if self.attach_speaker_meta:
             sender_name = event.get_sender_name() if hasattr(event, "get_sender_name") else "unknown"
@@ -1398,4 +1400,3 @@ class GeminiSTTBridge(Star):
             )
         except Exception as e:
             logger.error(f"[GeminiSTTBridge] 处理失败: {e}")
-
