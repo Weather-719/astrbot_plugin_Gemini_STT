@@ -77,7 +77,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Bailian_STT", "政ひかりはる", "阿里云百炼语音转写桥接到框架 LLM", "3.0.0")
+@register("astrbot_plugin_bailian_stt", "政ひかりはる", "阿里云百炼语音转写桥接到框架 LLM", "3.0.0")
 class BailianSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)

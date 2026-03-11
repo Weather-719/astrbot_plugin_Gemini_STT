@@ -1,4 +1,4 @@
-name: "astrbot_plugin_Bailian_STT"
+name: "astrbot_plugin_bailian_stt"
 author: "政ひかりはる"
 description: "使用阿里云百炼 Paraformer 模型实现 STT(语音识别)"
 version: "3.0.0"
