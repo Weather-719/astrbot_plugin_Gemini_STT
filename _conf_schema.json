@@ -1,27 +1,21 @@
 {
-  "api_url": {
-    "description": "Gemini/OpenAI兼容基地址",
-    "type": "string",
-    "hint": "中转站也支持",
-    "default": ""
-  },
   "api_key": {
-    "description": "API 密钥",
+    "description": "阿里云百炼 API 密钥",
     "type": "string",
-    "hint": "",
+    "hint": "在阿里云百炼控制台获取 API-KEY",
     "default": "",
     "obvious_hint": true
   },
   "model": {
-    "description": "模型ID",
+    "description": "语音识别模型",
     "type": "string",
-    "hint": "模型一定要支持语音识别",
-    "default": ""
+    "hint": "可选：paraformer-v2(推荐), paraformer-8k-v2, sensevoice-v2",
+    "default": "paraformer-v2"
   },
   "debug_mode": {
     "description": "调试模式",
     "type": "bool",
-    "hint": "开启后输出详细日志（URL、识别长度、转发预览等）",
+    "hint": "开启后输出详细日志（识别结果、转发预览等）",
     "default": false
   },
   "enable_voice": {
@@ -39,7 +33,7 @@
   "group_voice_whitelist": {
     "description": "群聊白名单",
     "type": "list",
-    "hint": "群号字符串列表；留空表示不限制。示例: [\"123456\", \"789012\"]",
+    "hint": "群号字符串列表；留空表示不限制。示例：[\"123456\", \"789012\"]",
     "default": []
   },
   "stop_other_handlers": {
@@ -84,13 +78,13 @@
   "attach_voice_marker": {
     "description": "是否附加语音来源标记",
     "type": "bool",
-    "hint": "开启后会附加“来自语音转写”的提示语",
+    "hint": "开启后会附加"来自语音转写"的提示语",
     "default": true
   },
   "attach_speaker_meta": {
     "description": "是否附加说话人身份信息",
     "type": "bool",
-    "hint": "开启后附加昵称/ID/群ID/平台，便于框架判断“谁在说话”",
+    "hint": "开启后附加昵称/ID/群 ID/平台，便于框架判断"谁在说话"",
     "default": true
   },
   "show_transcript": {
@@ -98,12 +92,6 @@
     "type": "bool",
     "hint": "调试用；生产建议关闭，避免多一条中间消息",
     "default": false
-  },
-  "enable_model_normalize": {
-    "description": "启用模型名清洗",
-    "type": "bool",
-    "hint": "自动去掉站点前缀、[标签]、models/ 等",
-    "default": true
   },
   "enable_transcript_clean": {
     "description": "启用转写文本清洗",
@@ -117,12 +105,6 @@
     "hint": "超出后自动截断，防止过长内容影响框架处理",
     "default": 2000
   },
-  "voice_instruction": {
-    "description": "自定义语音识别提示词",
-    "type": "text",
-    "hint": "留空则按输出模式自动生成提示词",
-    "default": ""
-  },
   "ffmpeg_path": {
     "description": "FFmpeg 路径（可自动配置）",
     "type": "string",
@@ -130,7 +112,7 @@
     "default": ""
   },
   "max_audio_mb": {
-    "description": "语音大小上限(MB)",
+    "description": "语音大小上限 (MB)",
     "type": "int",
     "hint": "超过限制将拒绝处理，防止超大文件导致超时",
     "default": 20
@@ -160,7 +142,7 @@
     "default": true
   },
   "allow_napcat_local_record_url": {
-    "description": "允许 NapCat 回环地址语音URL（可自动配置）",
+    "description": "允许 NapCat 回环地址语音 URL（可自动配置）",
     "type": "bool",
     "hint": "【建议保持开启】允许 127.0.0.1/localhost 的 get_record 回调 URL 下载",
     "default": true
@@ -178,7 +160,7 @@
     "default": ""
   },
   "use_current_conversation": {
-    "description": "是否绑定当前会话ID与conversation转发给框架",
+    "description": "是否绑定当前会话 ID 与 conversation 转发给框架",
     "type": "bool",
     "hint": "开启可增强与当前人格/记忆链路一致性（推荐开启）",
     "default": true
@@ -190,7 +172,7 @@
     "default": true
   },
   "allow_remote_audio_url": {
-    "description": "是否允许下载远程语音URL",
+    "description": "是否允许下载远程语音 URL",
     "type": "bool",
     "hint": "默认关闭以降低安全风险（SSRF）",
     "default": false
@@ -198,7 +180,7 @@
   "remote_audio_domain_whitelist": {
     "description": "远程语音域名白名单",
     "type": "list",
-    "hint": "allow_remote_audio_url=true时生效；留空表示不限制（不推荐）",
+    "hint": "allow_remote_audio_url=true 时生效；留空表示不限制（不推荐）",
     "default": []
   },
   "block_private_network": {
@@ -216,7 +198,7 @@
   "local_audio_allowed_dirs": {
     "description": "本地语音允许目录（可自动配置）",
     "type": "list",
-    "hint": "【可自动配置，通常不需要修改】插件启动时自动扫描并放行磁盘上已存在的 NapCat/QQ 目录。若日志提示\"路径未放行\"，可手动补充，如 /root/astrbot/ntqq",
+    "hint": "【可自动配置，通常不需要修改】插件启动时自动扫描并放行磁盘上已存在的 NapCat/QQ 目录。若日志提示"路径未放行"，可手动补充，如 /root/astrbot/ntqq",
     "default": [
       "data",
       "data/temp"
@@ -235,13 +217,13 @@
     "default": true
   },
   "temp_cleanup_interval_sec": {
-    "description": "定时清理间隔(秒)",
+    "description": "定时清理间隔 (秒)",
     "type": "int",
     "hint": "0 表示关闭定时清理；建议 600~3600",
     "default": 1800
   },
   "temp_cleanup_max_age_sec": {
-    "description": "定时清理文件最小年龄(秒)",
+    "description": "定时清理文件最小年龄 (秒)",
     "type": "int",
     "hint": "只清理超过该年龄的临时文件，避免删到刚生成文件",
     "default": 300

@@ -1,2 +1,3 @@
 aiohttp>=3.9.0
 pilk>=0.2.4
+dashscope>=1.14.0
