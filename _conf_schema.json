@@ -42,6 +42,20 @@
     "hint": "群号字符串列表；留空表示不限制。示例: [\"123456\", \"789012\"]",
     "default": []
   },
+  "group_voice_reply_probability": {
+    "description": "群聊语音回复概率",
+    "type": "float",
+    "hint": "范围 0~1。1=旧行为，每条群语音识别后都回复；0=只识别并写入上下文，不主动回复；0.1=约 10% 群语音进入 LLM 回复链路",
+    "default": 1.0,
+    "min": 0,
+    "max": 1
+  },
+  "group_voice_export_context": {
+    "description": "导出群语音转写上下文",
+    "type": "bool",
+    "hint": "开启后会把转写结果写入事件 extra，供 contextaware 等插件记录上下文；建议保持开启",
+    "default": true
+  },
   "stop_other_handlers": {
     "description": "是否阻止后续插件继续处理原语音事件",
     "type": "bool",

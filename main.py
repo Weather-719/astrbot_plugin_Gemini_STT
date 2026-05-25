@@ -35,6 +35,15 @@ except ImportError:
     PILK_AVAILABLE = False
 
 
+EXTRA_STT_TRANSCRIPT = "_gemini_stt_transcript"
+EXTRA_STT_RAW_TEXT = "_gemini_stt_raw_text"
+EXTRA_STT_FORWARD_TEXT = "_gemini_stt_forward_text"
+EXTRA_STT_IS_GROUP = "_gemini_stt_is_group"
+EXTRA_STT_SHOULD_REPLY = "_gemini_stt_should_reply"
+EXTRA_STT_REPLY_REASON = "_gemini_stt_reply_reason"
+EXTRA_STT_CACHE_ONLY = "_gemini_stt_cache_only"
+
+
 class StaticResolver(AbstractResolver):
     """
     将 host 固定解析到预先校验过的 IP 列表，缓解 DNS rebinding / TOCTOU。
@@ -67,7 +76,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.3.6")
+@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.4.0")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -81,6 +90,10 @@ class GeminiSTTBridge(Star):
         # 群聊
         self.enable_group_voice = bool(self._cfg("enable_group_voice", False))
         self.group_voice_whitelist = [str(g) for g in self._cfg("group_voice_whitelist", [])]
+        self.group_voice_reply_probability = self._clamp_probability(
+            self._cfg("group_voice_reply_probability", 1.0)
+        )
+        self.group_voice_export_context = bool(self._cfg("group_voice_export_context", True))
 
         # 行为策略
         self.stop_other_handlers = bool(self._cfg("stop_other_handlers", False))
@@ -152,10 +165,11 @@ class GeminiSTTBridge(Star):
         self._cleanup_bootstrapped = False
         self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.3.6")
+        logger.info("[GeminiSTTBridge] 插件已加载 v2.4.0")
         logger.info(
             f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}, "
-            f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}"
+            f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}, "
+            f"group_reply_probability={self.group_voice_reply_probability}"
         )
         logger.info(
             f"[GeminiSTTBridge] ffmpeg={'✓' if self.ffmpeg_path else '✗'}, pilk={'✓' if PILK_AVAILABLE else '✗'}"
@@ -172,6 +186,22 @@ class GeminiSTTBridge(Star):
     def _d(self, msg: str):
         if self.debug:
             logger.info(f"[GeminiSTTBridge] {msg}")
+
+    def _clamp_probability(self, value) -> float:
+        try:
+            probability = float(value)
+        except (TypeError, ValueError):
+            probability = 1.0
+        return max(0.0, min(1.0, probability))
+
+    def _set_event_extra(self, event: AstrMessageEvent, key: str, value) -> None:
+        setter = getattr(event, "set_extra", None)
+        if not callable(setter):
+            return
+        try:
+            setter(key, value)
+        except Exception as e:
+            self._d(f"写入事件 extra 失败: {key}, err={e}")
 
     def _normalize_allowed_dirs(self, raw_dirs: List[str]) -> List[str]:
         out = []
@@ -497,7 +527,9 @@ class GeminiSTTBridge(Star):
                 return False
         return True
 
-    def _should_stop_before_stt(self) -> bool:
+    def _should_stop_before_stt(self, event: AstrMessageEvent) -> bool:
+        if self._is_group_message(event) and self.group_voice_reply_probability < 1.0:
+            return False
         return (
             self.stop_other_handlers
             and self.stop_event_timing == "before_stt"
@@ -1328,6 +1360,41 @@ class GeminiSTTBridge(Star):
             return self._clean_transcript(plain)
         return self._clean_transcript(stt_text)
 
+    def _should_reply_to_voice(self, event: AstrMessageEvent) -> Tuple[bool, str]:
+        if not self._is_group_message(event):
+            return True, "private_voice"
+
+        probability = self.group_voice_reply_probability
+        if probability <= 0:
+            return False, "group_probability_miss"
+        if probability >= 1:
+            return True, "group_probability_hit"
+
+        if random.random() < probability:
+            return True, "group_probability_hit"
+        return False, "group_probability_miss"
+
+    def _export_stt_context(
+        self,
+        event: AstrMessageEvent,
+        *,
+        stt_text: str,
+        final_text: str,
+        forward_text: str,
+        should_reply: bool,
+        reply_reason: str,
+    ) -> None:
+        if not self.group_voice_export_context:
+            return
+        is_group = self._is_group_message(event)
+        self._set_event_extra(event, EXTRA_STT_TRANSCRIPT, final_text)
+        self._set_event_extra(event, EXTRA_STT_RAW_TEXT, stt_text)
+        self._set_event_extra(event, EXTRA_STT_FORWARD_TEXT, forward_text)
+        self._set_event_extra(event, EXTRA_STT_IS_GROUP, is_group)
+        self._set_event_extra(event, EXTRA_STT_SHOULD_REPLY, should_reply)
+        self._set_event_extra(event, EXTRA_STT_REPLY_REASON, reply_reason)
+        self._set_event_extra(event, EXTRA_STT_CACHE_ONLY, is_group and not should_reply)
+
     # ---------------- 事件入口 ----------------
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
@@ -1345,7 +1412,7 @@ class GeminiSTTBridge(Star):
             if not self._should_process_voice(event):
                 return
 
-            if self._should_stop_before_stt():
+            if self._should_stop_before_stt(event):
                 event.stop_event()
 
             audio_b64, audio_mime = await self._get_voice_data(event, voice_comp)
@@ -1376,13 +1443,27 @@ class GeminiSTTBridge(Star):
                     yield r
                 return
 
-            if self._should_stop_after_stt_success():
-                event.stop_event()
-
             if self.show_transcript:
                 yield event.plain_result(f"📝 识别结果：{final_text}")
 
             forward_text = self._build_forward_text(event, final_text)
+            should_reply, reply_reason = self._should_reply_to_voice(event)
+            self._export_stt_context(
+                event,
+                stt_text=stt_text,
+                final_text=final_text,
+                forward_text=forward_text,
+                should_reply=should_reply,
+                reply_reason=reply_reason,
+            )
+
+            if not should_reply:
+                self._d(f"群聊语音已识别但不触发回复: reason={reply_reason}, text={final_text[:80]}")
+                return
+
+            if self._should_stop_after_stt_success():
+                event.stop_event()
+
             self._d(f"output_mode={self.output_mode}, final_len={len(final_text)}")
             self._d(f"forward_preview={forward_text[:220]}")
 
