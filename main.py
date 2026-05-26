@@ -24,6 +24,7 @@ import aiohttp
 from aiohttp.abc import AbstractResolver
 
 from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
 
@@ -42,6 +43,7 @@ EXTRA_STT_IS_GROUP = "_gemini_stt_is_group"
 EXTRA_STT_SHOULD_REPLY = "_gemini_stt_should_reply"
 EXTRA_STT_REPLY_REASON = "_gemini_stt_reply_reason"
 EXTRA_STT_CACHE_ONLY = "_gemini_stt_cache_only"
+VOICE_CONTEXT_PREFIX = "[语音转写] "
 
 
 class StaticResolver(AbstractResolver):
@@ -76,7 +78,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.4.0")
+@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.4.1")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -165,7 +167,7 @@ class GeminiSTTBridge(Star):
         self._cleanup_bootstrapped = False
         self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.4.0")
+        logger.info("[GeminiSTTBridge] 插件已加载 v2.4.1")
         logger.info(
             f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}, "
             f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}, "
@@ -202,6 +204,23 @@ class GeminiSTTBridge(Star):
             setter(key, value)
         except Exception as e:
             self._d(f"写入事件 extra 失败: {key}, err={e}")
+
+    def _inject_transcript_plain(self, event: AstrMessageEvent, final_text: str) -> None:
+        """把转写结果补进消息链，供后续普通消息监听器记录上下文。"""
+        text = self._clean_transcript(final_text)
+        if not text:
+            return
+
+        context_text = f"{VOICE_CONTEXT_PREFIX}{text}"
+        try:
+            messages = self._get_messages(event)
+            if isinstance(messages, list):
+                for comp in messages:
+                    if type(comp).__name__ == "Plain" and getattr(comp, "text", "") == context_text:
+                        return
+                messages.insert(0, Plain(context_text))
+        except Exception as e:
+            self._d(f"写入语音转写消息链失败: {e}")
 
     def _normalize_allowed_dirs(self, raw_dirs: List[str]) -> List[str]:
         out = []
@@ -1456,6 +1475,7 @@ class GeminiSTTBridge(Star):
                 should_reply=should_reply,
                 reply_reason=reply_reason,
             )
+            self._inject_transcript_plain(event, final_text)
 
             if not should_reply:
                 self._d(f"群聊语音已识别但不触发回复: reason={reply_reason}, text={final_text[:80]}")

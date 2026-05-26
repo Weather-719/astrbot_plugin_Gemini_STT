@@ -23,6 +23,7 @@ def install_astrbot_stubs() -> dict[str, types.ModuleType]:
     api_mod = types.ModuleType("astrbot.api")
     event_mod = types.ModuleType("astrbot.api.event")
     star_mod = types.ModuleType("astrbot.api.star")
+    message_components_mod = types.ModuleType("astrbot.api.message_components")
 
     class Logger:
         def info(self, *args, **kwargs):
@@ -44,6 +45,10 @@ def install_astrbot_stubs() -> dict[str, types.ModuleType]:
     class EventMessageType:
         ALL = object()
 
+    class Plain:
+        def __init__(self, text: str, **kwargs):
+            self.text = text
+
     FilterNamespace = types.SimpleNamespace(
         EventMessageType=EventMessageType,
         event_message_type=_decorator,
@@ -54,6 +59,7 @@ def install_astrbot_stubs() -> dict[str, types.ModuleType]:
     star_mod.Context = object
     star_mod.Star = Star
     star_mod.register = register
+    message_components_mod.Plain = Plain
     api_mod.AstrBotConfig = dict
     api_mod.logger = Logger()
 
@@ -61,6 +67,7 @@ def install_astrbot_stubs() -> dict[str, types.ModuleType]:
         "astrbot": astrbot_mod,
         "astrbot.api": api_mod,
         "astrbot.api.event": event_mod,
+        "astrbot.api.message_components": message_components_mod,
         "astrbot.api.star": star_mod,
     }
 
@@ -85,12 +92,16 @@ class FakeEvent:
         self._group_id = group_id
         self.extras: dict[str, Any] = {}
         self.requested_llm = False
+        self.messages: list[Any] = []
 
     def get_group_id(self):
         return self._group_id
 
     def set_extra(self, key, value):
         self.extras[key] = value
+
+    def get_messages(self):
+        return self.messages
 
     def request_llm(self, **kwargs):
         self.requested_llm = True
@@ -152,6 +163,25 @@ class GeminiSTTGroupGateTest(unittest.TestCase):
         self.assertTrue(event.extras[self.mod.EXTRA_STT_IS_GROUP])
         self.assertFalse(event.extras[self.mod.EXTRA_STT_SHOULD_REPLY])
         self.assertTrue(event.extras[self.mod.EXTRA_STT_CACHE_ONLY])
+
+    def test_inject_transcript_plain_adds_context_message(self):
+        plugin = self.make_plugin()
+        event = FakeEvent()
+
+        plugin._inject_transcript_plain(event, "吱吱听得到吗？")
+
+        self.assertEqual(len(event.messages), 1)
+        self.assertEqual(event.messages[0].text, "[语音转写] 吱吱听得到吗？")
+        self.assertFalse(event.requested_llm)
+
+    def test_inject_transcript_plain_is_idempotent(self):
+        plugin = self.make_plugin()
+        event = FakeEvent()
+
+        plugin._inject_transcript_plain(event, "吱吱听得到吗？")
+        plugin._inject_transcript_plain(event, "吱吱听得到吗？")
+
+        self.assertEqual(len(event.messages), 1)
 
     def test_probability_group_voice_does_not_stop_before_stt(self):
         plugin = self.make_plugin(
