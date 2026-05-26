@@ -78,7 +78,7 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.4.1")
+@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.4.2")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -167,7 +167,7 @@ class GeminiSTTBridge(Star):
         self._cleanup_bootstrapped = False
         self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.4.1")
+        logger.info("[GeminiSTTBridge] 插件已加载 v2.4.2")
         logger.info(
             f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}, "
             f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}, "
@@ -498,6 +498,36 @@ class GeminiSTTBridge(Star):
                 return out
 
         return t
+
+    def _is_provider_error_text(self, stt_text: str) -> bool:
+        """
+        兼容部分代理把供应商错误包装成 200 + text 的情况，避免把错误提示当语音转写写入上下文。
+        """
+        t = re.sub(r"\s+", " ", (stt_text or "").strip())
+        if not t:
+            return False
+
+        lowered = t.lower()
+        exact_markers = (
+            "is no longer available. please switch",
+            "please switch to a supported model",
+            "not found for api version",
+            "api key not valid",
+            "permission denied",
+            "quota exceeded",
+            "resource exhausted",
+        )
+        if any(marker in lowered for marker in exact_markers):
+            return True
+
+        if re.search(
+            r"\b(?:gemini|model|models/)[\w\s./:-]{0,120}"
+            r"(?:deprecated|not available|not found|unsupported|not supported|does not exist)\b",
+            lowered,
+        ):
+            return True
+
+        return bool(re.search(r'^\s*\{.*"error"\s*:', stt_text or "", flags=re.DOTALL))
 
     def _file_size_ok(self, size_bytes: int) -> bool:
         return size_bytes <= self.max_audio_mb * 1024 * 1024
@@ -1207,6 +1237,10 @@ class GeminiSTTBridge(Star):
                             self._d(f"Gemini返回非JSON: {raw[:200]}")
                             return ""
 
+                        if isinstance(data, dict) and data.get("error"):
+                            self._d(f"Gemini返回错误对象: {str(data.get('error'))[:300]}")
+                            return ""
+
                         cands = data.get("candidates", [])
                         if not cands:
                             self._d("Gemini返回空candidates")
@@ -1216,7 +1250,11 @@ class GeminiSTTBridge(Star):
                         for p in parts:
                             text = p.get("text")
                             if text and text.strip():
-                                return text.strip()
+                                text = text.strip()
+                                if self._is_provider_error_text(text):
+                                    self._d(f"Gemini返回供应商错误文本: {text[:300]}")
+                                    return ""
+                                return text
 
                         self._d("Gemini返回parts中无text")
                         return ""
@@ -1444,6 +1482,12 @@ class GeminiSTTBridge(Star):
             stt_text = self._clean_transcript(stt_text)
 
             if not stt_text:
+                async for r in self._handle_stt_fail(event):
+                    yield r
+                return
+
+            if self._is_provider_error_text(stt_text):
+                logger.warning(f"[GeminiSTTBridge] 识别返回供应商错误文本，按失败处理: {stt_text[:200]}")
                 async for r in self._handle_stt_fail(event):
                     yield r
                 return

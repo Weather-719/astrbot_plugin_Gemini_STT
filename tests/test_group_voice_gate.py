@@ -183,6 +183,21 @@ class GeminiSTTGroupGateTest(unittest.TestCase):
 
         self.assertEqual(len(event.messages), 1)
 
+    def test_provider_error_text_is_not_valid_transcript(self):
+        plugin = self.make_plugin()
+
+        self.assertTrue(
+            plugin._is_provider_error_text(
+                "Gemini 3 Pro is no longer available. Please switch to a supported model."
+            )
+        )
+        self.assertTrue(
+            plugin._is_provider_error_text(
+                '{"error": {"message": "models/gemini-pro is not found for API version v1beta"}}'
+            )
+        )
+        self.assertFalse(plugin._is_provider_error_text("1) 原话转写：我是怎么唱的呀"))
+
     def test_probability_group_voice_does_not_stop_before_stt(self):
         plugin = self.make_plugin(
             {
