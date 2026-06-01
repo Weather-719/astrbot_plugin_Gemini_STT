@@ -27,6 +27,8 @@
 - 🔁 转写结果自动转发给 AstrBot 框架（`request_llm`）
 - 🧠 可与框架现有人格、记忆系统协作
 - 🧩 支持群聊开关与群白名单
+- 🎚️ 支持群聊语音“都识别但仅概率回复”
+- 🧭 支持向 contextaware 导出语音转写上下文
 - ⚙️ 支持失败策略可配置（放行/拦截/提示）
 - 📝 支持输出模式：
   - `simple`：仅原话转写
@@ -106,6 +108,21 @@ request_llm 在复杂 hook 链中的稳定放行策略
 simple 模式原话提取的鲁棒性
 
 语音输入与文本输入的体验一致性优化
+
+## 🧩 群聊概率回复与兼容建议
+
+群聊语音通常就是单独的 `Record` 消息，不能可靠携带 @、引用回复或文字唤醒词。因此推荐把“识别”和“回复”拆开：
+
+```yaml
+enable_group_voice: true
+group_voice_reply_probability: 0.1
+group_voice_export_context: true
+```
+
+- `group_voice_reply_probability=1`：保持旧行为，所有群语音识别后都会进入框架 LLM 回复链路。
+- `group_voice_reply_probability=0.1`：所有群语音都会识别，但只有约 10% 会进入框架 LLM 回复链路。
+- `group_voice_reply_probability=0`：只识别并导出上下文，不主动回复。
+- `group_voice_export_context=true`：把识别结果写入事件 extra，供 contextaware 记录为 `[语音转写] ...`。
 
 欢迎提交 Issue / PR
 ---
