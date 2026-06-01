@@ -15,5 +15,5 @@
 ### 文档
 
 - 明确说明 QQ 语音实质为 SILK v3 格式（后缀虽为 `.amr`，内容并非标准 AMR），pilk 对 QQ 机器人场景是必要依赖
-- 补充 Windows 用户安装 pilk 的两种解决方案（安装 C++ Build Tools / 非 QQ 平台可移除 pilk 依赖）
+- 补充 Windows 用户安装 pilk 的解决方案（ 非 QQ 平台可移除 pilk 依赖）
 - 整理 README 格式，配置说明改为表格，提升可读性
