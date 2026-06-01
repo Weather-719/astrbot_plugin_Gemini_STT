@@ -72,10 +72,7 @@ error: Microsoft Visual C++ 14.0 or greater is required.
 
 **Windows 解决方案：**
 
-1. **安装编译工具（推荐）**  
-   下载并安装 [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)，勾选"使用 C++ 的桌面开发"，安装后重启，再重新安装插件。
-
-2. 从`requirements.txt`移除 pilk（非 QQ 平台）
+1. 从`requirements.txt`移除 pilk（非 QQ 平台）
 将`requirements.txt`中的 pilk>=0.2.4 这一行删除后再**重载**插件，可绕过编译问题正常加载。但**QQ 语音将无法识别**，仅适用于使用标准 mp3 / wav 语音的非 QQ 平台。
 
 > Linux / Docker 环境通常可直接安装 pilk，无需额外处理。
