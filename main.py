@@ -983,7 +983,27 @@ class GeminiSTTBridge(Star):
         if not PILK_AVAILABLE:
             return False
         try:
-            pilk.decode(silk_path, pcm_path)
+            # 腾讯 SILK 文件头有额外的 \x02 前缀（标准 SILK 是 #!SILK_V3）
+            # 需要先剥离该前缀，否则 pilk 解码失败
+            with open(silk_path, "rb") as f:
+                header = f.read(10)
+
+            if header.startswith(b"\x02#!SILK"):
+                self._d("检测到腾讯 SILK \\x02 前缀，剥离后解码")
+                with open(silk_path, "rb") as f:
+                    f.read(1)  # 跳过 \x02
+                    data = f.read()
+                tmp_path = silk_path + ".stripped.silk"
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(data)
+                    pilk.decode(tmp_path, pcm_path)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            else:
+                pilk.decode(silk_path, pcm_path)
+
             return os.path.exists(pcm_path) and os.path.getsize(pcm_path) > 0
         except Exception as e:
             self._d(f"SILK解码失败: {e}")
@@ -1157,13 +1177,52 @@ class GeminiSTTBridge(Star):
 
     # ---------------- Gemini 调用（STT） ----------------
 
+    # 官方 Gemini API 域名，填这些域名时使用原生鉴权（x-goog-api-key）
+    _GEMINI_OFFICIAL_HOSTS = {
+        "generativelanguage.googleapis.com",
+        "aiplatform.googleapis.com",
+    }
+
+    def _is_official_gemini_url(self, api_url: str) -> bool:
+        """判断是否为官方 Gemini API 地址。"""
+        try:
+            host = (urlparse(api_url).hostname or "").lower().strip()
+            return host in self._GEMINI_OFFICIAL_HOSTS
+        except Exception:
+            return False
+
     def _build_gemini_url(self, api_url: str, model: str) -> str:
+        """
+        构建 Gemini generateContent 端点 URL。
+        - 官方地址：剥掉路径后缀后拼 /v1beta/models/{model}:generateContent
+        - 中转站：剥掉常见的 OpenAI 兼容路径后缀后拼接
+        """
         base = (api_url or "").rstrip("/")
-        if base.endswith("/v1/chat/completions"):
-            base = base[: -len("/v1/chat/completions")]
-        elif base.endswith("/v1"):
-            base = base[: -len("/v1")]
+        # 剥掉用户可能填入的路径后缀，统一从根域名拼接目标端点
+        # 支持：/v1/chat/completions、/v1beta/openai、/v1beta、/v1
+        for suffix in ("/v1/chat/completions", "/v1beta/openai", "/v1beta", "/v1"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
         return f"{base}/v1beta/models/{model}:generateContent"
+
+    def _build_gemini_headers(self, api_url: str, api_key: str) -> dict:
+        """
+        根据 api_url 自动选择鉴权方式：
+        - 官方地址：x-goog-api-key（原生鉴权）
+        - 中转站：Authorization: Bearer（OpenAI 兼容鉴权）
+        """
+        if self._is_official_gemini_url(api_url):
+            self._d("鉴权方式：官方原生 x-goog-api-key")
+            return {
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            }
+        self._d("鉴权方式：中转站 Bearer")
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
 
     def _build_stt_instruction(self) -> str:
         custom = (self._cfg("voice_instruction", "") or "").strip()
@@ -1178,6 +1237,7 @@ class GeminiSTTBridge(Star):
                 "2) 语言：识别到的语言，若无人声则写【不适用】\n"
                 "3) 语气/情绪：说话时的情绪；若无人声则写【不适用】\n"
                 "4) 环境音：描述音频中可感知的背景声音特征，60字以内，帮助判断录音所处场景。\n"
+                "5) 说话人数：判断音频中有几个不同说话人；若无人声则写【不适用】\n"
                 "6) 大意总结：综合以上内容用一句话描述这段音频，30字以内。\n"
                 "不要回答用户，不要对上述内容做任何解释，严格按格式输出。"
             )
@@ -1203,10 +1263,7 @@ class GeminiSTTBridge(Star):
         url = self._build_gemini_url(api_url, model)
         self._d(f"Gemini URL: {url}")
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._build_gemini_headers(api_url, api_key)
 
         stt_instruction = self._build_stt_instruction()
         if user_text:
@@ -1259,7 +1316,7 @@ class GeminiSTTBridge(Star):
                         self._d("Gemini返回parts中无text")
                         return ""
 
-                    if (resp.status >= 600 or resp.status == 429) and i < self.retry_times:
+                    if (resp.status >= 500 or resp.status == 429) and i < self.retry_times:
                         wait_sec = min(2**i, 8) + random.uniform(0, 0.3)
                         self._d(f"Gemini {resp.status}，第{i + 1}次重试，等待{wait_sec:.2f}s")
                         await asyncio.sleep(wait_sec)
@@ -1312,24 +1369,26 @@ class GeminiSTTBridge(Star):
         """
         检测 Gemini 是否将 STT 指令本身作为转写内容返回（空白语音幻觉）。
         当模型收到无声/空白音频时，有时会把提示词原样输出。
+        从实际生效的提示词中动态提取特征片段，避免硬编码关键词与提示词不匹配。
         """
         if not stt_text:
             return False
 
         instruction = self._build_stt_instruction()
-        # 提取指令中有辨识度的关键词（非通用词）
-        HALLUCINATION_MARKERS = [
-            "你是语音转写器",
-            "只做识别与信息提取",
-            "不要回答用户",
-            "只输出“原话转写”的纯文本",
-            "不要解释，不要总结",
-        ]
-        # 也匹配用户自定义指令的前20字符
-        if instruction:
-            HALLUCINATION_MARKERS.append(instruction[:20])
+        if not instruction:
+            return False
 
-        matched = sum(1 for m in HALLUCINATION_MARKERS if m in stt_text)
+        # 从实际指令中每隔8个字符取一段，提取有辨识度的片段
+        # 跳过前几个字（你是一个等通用开头），从第4字开始取
+        markers = []
+        step = 8
+        start = 4
+        for i in range(start, min(len(instruction), start + step * 6), step):
+            chunk = instruction[i:i + step].strip()
+            if len(chunk) >= 4:
+                markers.append(chunk)
+
+        matched = sum(1 for m in markers if m in stt_text)
         if matched >= 2:
             self._d(f"STT幻觉检测：转写内容疑似重复指令（命中{matched}个标记），判定为无效")
             return True
@@ -1545,4 +1604,3 @@ class GeminiSTTBridge(Star):
             )
         except Exception as e:
             logger.error(f"[GeminiSTTBridge] 处理失败: {e}")
-
