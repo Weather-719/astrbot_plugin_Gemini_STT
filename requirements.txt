@@ -1,2 +1,2 @@
 aiohttp>=3.9.0
-pilk>=0.2.4
+silk-python>=0.2.6
