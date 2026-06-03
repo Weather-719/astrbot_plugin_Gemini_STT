@@ -5,6 +5,7 @@ Gemini STT Bridge Plugin (Hardened + Refactored)
 - 支持失败策略、事件拦截时机、模型名清洗、说话人信息注入
 """
 
+import io
 import os
 import re
 import json
@@ -21,19 +22,13 @@ from urllib.parse import urlparse
 from typing import Optional, Tuple, List, Dict, Set
 
 import aiohttp
+import pysilk
 from aiohttp.abc import AbstractResolver
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import Plain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api import AstrBotConfig, logger
-
-try:
-    import pilk
-
-    PILK_AVAILABLE = True
-except ImportError:
-    PILK_AVAILABLE = False
 
 
 EXTRA_STT_TRANSCRIPT = "_gemini_stt_transcript"
@@ -78,7 +73,6 @@ class StaticResolver(AbstractResolver):
         return
 
 
-@register("Gemini_STT", "政ひかりはる", "Gemini语音转写桥接到框架LLM", "2.4.2")
 class GeminiSTTBridge(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -167,14 +161,14 @@ class GeminiSTTBridge(Star):
         self._cleanup_bootstrapped = False
         self._cleanup_prefixes = ("gsv_", "gsv_url_", "gsv_record_")
 
-        logger.info("[GeminiSTTBridge] 插件已加载 v2.4.2")
+        logger.info("[GeminiSTTBridge] 插件已加载")
         logger.info(
             f"[GeminiSTTBridge] enable_voice={self.enable_voice}, output_mode={self.output_mode}, "
             f"fail={self.on_stt_fail}, stop={self.stop_event_timing}/{self.stop_other_handlers}, "
             f"group_reply_probability={self.group_voice_reply_probability}"
         )
         logger.info(
-            f"[GeminiSTTBridge] ffmpeg={'✓' if self.ffmpeg_path else '✗'}, pilk={'✓' if PILK_AVAILABLE else '✗'}"
+            f"[GeminiSTTBridge] ffmpeg={'✓' if self.ffmpeg_path else '✗'}"
         )
         if self._auto_remap_pairs:
             logger.info(
@@ -980,11 +974,9 @@ class GeminiSTTBridge(Star):
             return ""
 
     def _convert_silk_to_pcm(self, silk_path: str, pcm_path: str) -> bool:
-        if not PILK_AVAILABLE:
-            return False
         try:
             # 腾讯 SILK 文件头有额外的 \x02 前缀（标准 SILK 是 #!SILK_V3）
-            # 需要先剥离该前缀，否则 pilk 解码失败
+            # 需要先剥离该前缀，否则 pysilk 解码失败
             with open(silk_path, "rb") as f:
                 header = f.read(10)
 
@@ -993,16 +985,15 @@ class GeminiSTTBridge(Star):
                 with open(silk_path, "rb") as f:
                     f.read(1)  # 跳过 \x02
                     data = f.read()
-                tmp_path = silk_path + ".stripped.silk"
-                try:
-                    with open(tmp_path, "wb") as f:
-                        f.write(data)
-                    pilk.decode(tmp_path, pcm_path)
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                input_io = io.BytesIO(data)
             else:
-                pilk.decode(silk_path, pcm_path)
+                with open(silk_path, "rb") as f:
+                    input_io = io.BytesIO(f.read())
+
+            output_io = io.BytesIO()
+            pysilk.decode(input_io, output_io, 24000)
+            with open(pcm_path, "wb") as f:
+                f.write(output_io.getvalue())
 
             return os.path.exists(pcm_path) and os.path.getsize(pcm_path) > 0
         except Exception as e:
@@ -1144,9 +1135,6 @@ class GeminiSTTBridge(Star):
                 return self._encode_mp3_b64_with_limit(mp3_path)
 
             if fmt == "silk":
-                if not PILK_AVAILABLE:
-                    self._d("未安装pilk，无法解码silk")
-                    return None, None
                 if not self.ffmpeg_path:
                     self._d("未找到FFmpeg，无法转换silk")
                     return None, None

@@ -51,31 +51,18 @@
 | 依赖 | 说明 |
 |------|------|
 | `aiohttp` | 随插件自动安装 |
+| `silk-python` | 随插件自动安装，处理 SILK 格式语音（QQ 用户必需） |
 | `ffmpeg` | 需自行安装并加入系统 PATH |
-| `pilk` | 处理 SILK 格式语音（QQ 用户必需，见下方说明） |
 
-### 关于 pilk（QQ 用户必读）
+### 关于 SILK 解码（QQ 用户必读）
 
-**QQ 语音的实际编码是 SILK 格式**，文件后缀虽然是 `.amr`，但内容是 SILK v3，并非标准 AMR。因此对于 QQ 机器人场景，pilk 是处理语音的必要依赖。
+**QQ 语音的实际编码是 SILK 格式**，文件后缀虽然是 `.amr`，但内容是 SILK v3，并非标准 AMR。插件使用 `silk-python`（即 `pysilk`）进行解码（与astrbot保持一致）。
 
 完整处理链路：
 
 ```
-QQ语音(SILK) → pilk 解码 → ffmpeg 转 MP3 → Gemini 识别 → 文字
+QQ语音(SILK) → silk-python 解码 → ffmpeg 转 MP3 → Gemini 识别 → 文字
 ```
-
-pilk 包含 C 扩展，**Windows 上需要从源码编译**。若系统未安装 C++ 编译工具链，插件安装时会报错：
-
-```
-error: Microsoft Visual C++ 14.0 or greater is required.
-```
-
-**Windows 解决方案：**
-
-1. 从`requirements.txt`移除 pilk（非 QQ 平台）
-将`requirements.txt`中的 pilk>=0.2.4 这一行删除后再**重载**插件，可绕过编译问题正常加载。但**QQ 语音将无法识别**，仅适用于使用标准 mp3 / wav 语音的非 QQ 平台。
-
-> Linux / Docker 环境通常可直接安装 pilk，无需额外处理。
 
 ---
 
