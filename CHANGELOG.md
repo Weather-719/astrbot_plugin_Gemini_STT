@@ -1,3 +1,20 @@
+# v3.0.0
+
+### 修复
+
+- 修复"引用 / @ + 语音"触发双回复的问题：语音被本插件接管并回复时调用 `event.should_call_llm(True)` 阻止 AstrBot 默认回复链再次处理（不影响插件 `request_llm` 与后续插件记录上下文）；旧版 AstrBot 无该 API 时自动跳过
+- 修复语音识别并发无限制的问题：新增 `stt_max_concurrency` 配置（默认 3），用信号量限制同时进入识别流程（下载+转码+调 Gemini）的语音数量，其余排队，避免群语音过多导致 API 限流
+
+### 新增
+
+- 新增 `docs/API.md` 开发文档，声明对外公开契约（事件 extra 字段、`[语音转写]` 前缀、防双回复约定），供第三方插件集成
+- 新增 GitHub Actions CI 工作流（Python 3.12 / 3.13），自动执行语法检查与单元测试
+- 新增单元测试：`_suppress_default_llm` 的调用行为与旧版 AstrBot 兼容跳过
+
+### 文档
+
+- README 补充并发限流、防双回复特性；修正 `stop_other_handlers` 描述（双回复已由插件自动处理，一般无需开启）
+
 # v2.6.0
 
 ### 改进
