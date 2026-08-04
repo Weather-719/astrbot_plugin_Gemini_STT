@@ -93,6 +93,7 @@ class FakeEvent:
         self.extras: dict[str, Any] = {}
         self.requested_llm = False
         self.messages: list[Any] = []
+        self.should_call_llm_calls: list[bool] = []
 
     def get_group_id(self):
         return self._group_id
@@ -106,6 +107,9 @@ class FakeEvent:
     def request_llm(self, **kwargs):
         self.requested_llm = True
         return {"request_llm": kwargs}
+
+    def should_call_llm(self, call_llm: bool):
+        self.should_call_llm_calls.append(call_llm)
 
 
 class GeminiSTTGroupGateTest(unittest.TestCase):
@@ -239,6 +243,23 @@ class GeminiSTTGroupGateTest(unittest.TestCase):
         event = FakeEvent()
 
         self.assertTrue(plugin._should_stop_before_stt(event))
+
+    def test_suppress_default_llm_calls_should_call_llm_true(self):
+        plugin = self.make_plugin()
+        event = FakeEvent()
+
+        plugin._suppress_default_llm(event)
+
+        self.assertEqual(event.should_call_llm_calls, [True])
+
+    def test_suppress_default_llm_skips_when_api_missing(self):
+        plugin = self.make_plugin()
+
+        class LegacyEvent:
+            pass
+
+        # 旧版 AstrBot 事件没有 should_call_llm，必须静默跳过不抛异常
+        plugin._suppress_default_llm(LegacyEvent())  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
