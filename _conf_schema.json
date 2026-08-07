@@ -161,6 +161,14 @@
     "hint": "对 5xx/429/网络异常重试，建议 1~3",
     "default": 2
   },
+  "stt_max_concurrency": {
+    "description": "语音识别最大并发数",
+    "type": "int",
+    "hint": "同时最多 N 条语音进入识别流程（下载+转码+调Gemini），其余排队等待；防止群语音过多导致 API 限流",
+    "default": 3,
+    "min": 1,
+    "max": 10
+  },
   "voice_file_wait_sec": {
     "description": "本地语音文件等待秒数",
     "type": "int",

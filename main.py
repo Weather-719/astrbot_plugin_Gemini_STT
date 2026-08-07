@@ -112,6 +112,10 @@ class GeminiSTTBridge(Star):
         self.timeout_sec = int(self._cfg("timeout_sec", 120))
         self.retry_times = int(self._cfg("retry_times", 2))
 
+        # 识别并发控制：同时最多 N 条语音进入识别流程，其余排队，避免并发打爆 Gemini 限流
+        self.stt_max_concurrency = max(1, int(self._cfg("stt_max_concurrency", 3)))
+        self._stt_semaphore = asyncio.Semaphore(self.stt_max_concurrency)
+
         # 本地文件等待/兜底策略
         self.voice_file_wait_sec = int(self._cfg("voice_file_wait_sec", 10))
         self.enable_get_record_fallback = bool(self._cfg("enable_get_record_fallback", True))
@@ -1499,6 +1503,21 @@ class GeminiSTTBridge(Star):
         self._set_event_extra(event, EXTRA_STT_REPLY_REASON, reply_reason)
         self._set_event_extra(event, EXTRA_STT_CACHE_ONLY, is_group and not should_reply)
 
+    def _suppress_default_llm(self, event: AstrMessageEvent) -> None:
+        """禁止 AstrBot 默认回复链处理已被本插件接管的语音消息，防止双回复。
+
+        should_call_llm(True) 只阻止框架的默认 LLM 请求链路（@/引用/唤醒词触发），
+        不会阻止插件中的 request_llm，也不会停止事件传播（后续插件仍可记录上下文）。
+        对不提供该 API 的旧版 AstrBot 自动跳过。
+        """
+        call = getattr(event, "should_call_llm", None)
+        if not callable(call):
+            return
+        try:
+            call(True)
+        except Exception as e:
+            self._d(f"should_call_llm 调用失败: {e}")
+
     # ---------------- 事件入口 ----------------
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
@@ -1519,14 +1538,15 @@ class GeminiSTTBridge(Star):
             if self._should_stop_before_stt(event):
                 event.stop_event()
 
-            audio_b64, audio_mime = await self._get_voice_data(event, voice_comp)
-            if not audio_b64:
-                async for r in self._handle_stt_fail(event):
-                    yield r
-                return
+            async with self._stt_semaphore:
+                audio_b64, audio_mime = await self._get_voice_data(event, voice_comp)
+                if not audio_b64:
+                    async for r in self._handle_stt_fail(event):
+                        yield r
+                    return
 
-            stt_text = await self._call_gemini_stt(audio_b64, audio_mime, user_text)
-            stt_text = self._clean_transcript(stt_text)
+                stt_text = await self._call_gemini_stt(audio_b64, audio_mime, user_text)
+                stt_text = self._clean_transcript(stt_text)
 
             if not stt_text:
                 async for r in self._handle_stt_fail(event):
@@ -1571,6 +1591,9 @@ class GeminiSTTBridge(Star):
             if not should_reply:
                 self._d(f"群聊语音已识别但不触发回复: reason={reply_reason}, text={final_text[:80]}")
                 return
+
+            # 本插件已接管并决定回复：禁止框架默认回复链再处理（防止"引用+@+语音"双回复）
+            self._suppress_default_llm(event)
 
             if self._should_stop_after_stt_success():
                 event.stop_event()

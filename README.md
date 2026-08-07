@@ -32,6 +32,9 @@
   - `rich`：原话 + 语言 + 语气 + 环境音 + 说话人数 + 大意
 - 🧹 支持模型名自动清洗（兼容 `[满血D]xxx` 等模型 ID）
 - 🛡️ 可选附加语音来源标记与说话人元信息
+- 🚦 语音识别并发限流（`stt_max_concurrency`，默认 3）
+- 🛡️ 防止"引用 / @ + 语音"双回复（`should_call_llm`）
+- 📚 开发文档：[`docs/API.md`](docs/API.md)（供插件集成用的公开契约）
 
 ---
 
@@ -80,7 +83,7 @@ QQ语音(SILK) → silk-python 解码 → ffmpeg 转 MP3 → Gemini 识别 → �
 
 | 配置项 | 说明 |
 |--------|------|
-| `stop_other_handlers` | 是否阻止后续插件继续处理原语音，建议开启避免双回复 |
+| `stop_other_handlers` | 是否阻止后续插件继续处理原语音事件。双回复已由插件内部自动处理（`should_call_llm`），一般无需开启；若开启请保持 `stop_event_timing=never`，否则会拦截 contextaware 记录上下文 |
 | `stop_event_timing` | 拦截时机：`before_stt` / `after_stt` / `never`（推荐） |
 | `on_stt_fail` | 失败策略：`pass` / `block` / `notify` / `notify_pass`（推荐） |
 
@@ -98,6 +101,7 @@ QQ语音(SILK) → silk-python 解码 → ffmpeg 转 MP3 → Gemini 识别 → �
 | `enable_model_normalize` | 自动清洗带标签模型名（如 `[满血D]xxx`），建议开启 |
 | `use_current_conversation` | 绑定当前会话 ID 转发，增强人格/记忆一致性，建议开启 |
 | `use_framework_tool_manager` | 传入框架工具管理器，若出现兼容问题可关闭排查 |
+| `stt_max_concurrency` | 语音识别最大并发数（默认 3）：同时最多 N 条语音进入识别流程（下载+转码+调 Gemini），其余排队，防止群语音过多触发 API 限流 |
 
 ---
 
